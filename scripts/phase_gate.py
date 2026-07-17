@@ -59,10 +59,10 @@ def verify_bom() -> list[str]:
 def print_manual_checklist() -> None:
     print("\n[MANUAL CHECKLIST] TradingView確認項目")
     print("1. 確定レッグと未確定点線が表示される")
-    print("2. HUD ON/OFF と シグナル ON/OFF が期待どおり動作する")
-    print("3. 昇格 と 上反転/下反転 が意図した場面で表示される")
-    print("4. 短期足(例: 5m/15m)で線増殖や描画欠落がない")
-    print("5. 長期足(例: 1h/4h)で線増殖や描画欠落がない")
+    print("2. 水平線が確定ピボット起点で生成される")
+    print("3. 足1終値突破だけでは遷移せず、足2終値の高安更新でのみ遷移する")
+    print("4. Active→Flipped で色反転、Flipped→Broken で灰色ドット化する")
+    print("5. BrokenがExpiry経過で削除され、短期足/長期足で描画破綻がない")
 
 
 def main() -> int:

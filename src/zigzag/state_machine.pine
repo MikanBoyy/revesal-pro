@@ -1,3 +1,42 @@
+// @function 水平線の描画スタイルを状態に応じて更新する
+// @param targetLine 更新対象ライン
+// @param lineState ライン状態（Active/Flipped/Broken）
+// @param lineRole ライン役割（レジ/サポ）
+// @param resistanceColor レジスタンス色
+// @param supportColor サポート色
+// @param brokenColor 完全ブレイク色
+// @return なし
+f_apply_sr_line_style(targetLine, lineState, lineRole, resistanceColor, supportColor, brokenColor) =>
+	appliedStyle = lineState == 3 ? line.style_dotted : line.style_solid
+	color appliedColor = lineState == 3 ? brokenColor : (lineRole == 1 ? resistanceColor : supportColor)
+	line.set_style(targetLine, appliedStyle)
+	line.set_color(targetLine, appliedColor)
+
+// @function 水平線管理配列から指定インデックスの要素を削除する
+// @param horizontalLines ライン配列
+// @param linePrices 価格配列
+// @param lineRoles 役割配列
+// @param lineStates 状態配列
+// @param createdBars 生成バー配列
+// @param brokenBars 最終ブレイク確定バー配列
+// @param watchArmed 足1監視中フラグ配列
+// @param watchFirstBars 足1のバー番号配列
+// @param watchFirstExtremes 足1の高値/安値配列
+// @param targetIndex 削除対象インデックス
+// @return なし
+f_delete_sr_line_at(horizontalLines, linePrices, lineRoles, lineStates, createdBars, brokenBars, watchArmed, watchFirstBars, watchFirstExtremes, targetIndex) =>
+	line targetLine = array.get(horizontalLines, targetIndex)
+	line.delete(targetLine)
+	array.remove(horizontalLines, targetIndex)
+	array.remove(linePrices, targetIndex)
+	array.remove(lineRoles, targetIndex)
+	array.remove(lineStates, targetIndex)
+	array.remove(createdBars, targetIndex)
+	array.remove(brokenBars, targetIndex)
+	array.remove(watchArmed, targetIndex)
+	array.remove(watchFirstBars, targetIndex)
+	array.remove(watchFirstExtremes, targetIndex)
+
 // @function 一般的なPivotベースZigZagを描画する
 // @param なし
 // @return なし
@@ -5,6 +44,11 @@ zz_run() =>
 	int PIVOT_TYPE_NONE = 0
 	int PIVOT_TYPE_UP = 1
 	int PIVOT_TYPE_DOWN = -1
+	int SR_ROLE_RESISTANCE = 1
+	int SR_ROLE_SUPPORT = -1
+	int SR_STATE_ACTIVE = 1
+	int SR_STATE_FLIPPED = 2
+	int SR_STATE_BROKEN = 3
 	string SIGNAL_TEXT_PROMOTION = "昇格"
 	string SIGNAL_TEXT_REVERSAL_UP = "上反転"
 	string SIGNAL_TEXT_REVERSAL_DOWN = "下反転"
@@ -30,6 +74,11 @@ zz_run() =>
 	float discountDeviationPercent = input.float(1.0, "Discount側最小変化率(%)", minval=0.1, step=0.1, tooltip="価格がレンジ下半分(Discount)にある時の反転しきい値")
 	float premiumDeviationPercent = input.float(1.0, "Premium側最小変化率(%)", minval=0.1, step=0.1, tooltip="価格がレンジ上半分(Premium)にある時の反転しきい値")
 	int minBarsBetweenReversals = input.int(3, "最小反転間隔(バー)", minval=1, maxval=20, tooltip="確定反転の連続発生を抑えるための最小バー間隔")
+	color resistanceLineColor = input.color(color.new(#b97f01, 0), "Res_Color", tooltip="レジスタンスライン（有効）の色")
+	color supportLineColor = input.color(color.new(#0d91dd, 0), "Sup_Color", tooltip="サポートライン（有効）の色")
+	color brokenLineColor = input.color(color.new(color.gray, 0), "Broken_Line_Color", tooltip="完全に破壊されたラインの色")
+	int maxHorizontalLinesCount = input.int(50, "Max_Lines_Count", minval=10, maxval=400, tooltip="チャート上に保持する最大水平ライン数")
+	int expiryBarsAfterBreak = input.int(100, "Expiry_Bars_After_Break", minval=1, maxval=2000, tooltip="Broken後に何本でラインを削除するか")
 	bool requireFibPromotion = input.bool(false, "Fib昇格必須で確定", tooltip="ONで反転候補が選択Fib比率に到達した場合のみ確定を許可")
 	string fibPromotionLevel = input.string(FIB_OPTION_23_6, "昇格Fib比率", options=[FIB_OPTION_23_6, FIB_OPTION_38_2], tooltip="昇格判定に使う戻し比率")
 	bool useErAdaptiveFib = input.bool(true, "ER連動で昇格Fib比率を切替", tooltip="ONでERに応じて強い相場23.6%、弱い相場38.2%を自動適用")
@@ -42,7 +91,7 @@ zz_run() =>
 	bool showRealtimeLeg = input.bool(true, "未確定レッグを表示", tooltip="最後の確定ピボットから現在値への点線を表示")
 	color upColor = input.color(color.new(color.lime, 0), "上昇レッグ色")
 	color downColor = input.color(color.new(color.red, 0), "下降レッグ色")
-	int lineWidth = input.int(2, "ライン幅", minval=1, maxval=4)
+	int lineWidth = input.int(4, "ライン幅", minval=1, maxval=4)
 	float manualFibRatio = f_get_fib_ratio_from_label(fibPromotionLevel)
 	float efficiencyRatioValue = f_calc_efficiency_ratio(close, erPeriod)
 	bool hasStrongTrend = efficiencyRatioValue >= erThreshold
@@ -88,6 +137,15 @@ zz_run() =>
 	var line realtimeLegLine = na
 	var table hudTable = table.new(position.top_right, TABLE_COLUMNS, TABLE_ROWS, border_width=1)
 	var array<label> signalLabels = array.new<label>()
+	var array<line> horizontalLines = array.new<line>()
+	var array<float> horizontalLinePrices = array.new<float>()
+	var array<int> horizontalLineRoles = array.new<int>()
+	var array<int> horizontalLineStates = array.new<int>()
+	var array<int> horizontalLineCreatedBars = array.new<int>()
+	var array<int> horizontalLineBrokenBars = array.new<int>()
+	var array<bool> horizontalWatchArmed = array.new<bool>()
+	var array<int> horizontalWatchFirstBars = array.new<int>()
+	var array<float> horizontalWatchFirstExtremes = array.new<float>()
 
 	// フェーズ6: Fib昇格シグナルの重複通知を抑制する。
 	var int promotionCandidateType = PIVOT_TYPE_NONE
@@ -261,6 +319,82 @@ zz_run() =>
 			color reversalColor = confirmedPivotType == PIVOT_TYPE_UP ? upColor : downColor
 			label reversalLabel = label.new(reversalConfirmSignalTime, reversalLabelPrice, reversalText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.white, color=color.new(reversalColor, 0), size=size.tiny)
 			f_append_signal_label_with_cap(signalLabels, reversalLabel, maxSignalLabels)
+
+	if reversalConfirmSignal and not na(confirmedPivotPrice) and not na(confirmedPivotTime)
+		int initialLineRole = confirmedPivotType == PIVOT_TYPE_UP ? SR_ROLE_RESISTANCE : SR_ROLE_SUPPORT
+		line createdHorizontalLine = line.new(confirmedPivotTime, confirmedPivotPrice, time, confirmedPivotPrice, xloc=xloc.bar_time, extend=extend.right, color=resistanceLineColor, style=line.style_solid, width=1)
+		f_apply_sr_line_style(createdHorizontalLine, SR_STATE_ACTIVE, initialLineRole, resistanceLineColor, supportLineColor, brokenLineColor)
+		array.push(horizontalLines, createdHorizontalLine)
+		array.push(horizontalLinePrices, confirmedPivotPrice)
+		array.push(horizontalLineRoles, initialLineRole)
+		array.push(horizontalLineStates, SR_STATE_ACTIVE)
+		array.push(horizontalLineCreatedBars, bar_index)
+		array.push(horizontalLineBrokenBars, na)
+		array.push(horizontalWatchArmed, false)
+		array.push(horizontalWatchFirstBars, na)
+		array.push(horizontalWatchFirstExtremes, na)
+
+		if array.size(horizontalLines) > maxHorizontalLinesCount
+			f_delete_sr_line_at(horizontalLines, horizontalLinePrices, horizontalLineRoles, horizontalLineStates, horizontalLineCreatedBars, horizontalLineBrokenBars, horizontalWatchArmed, horizontalWatchFirstBars, horizontalWatchFirstExtremes, 0)
+
+	int horizontalIndex = array.size(horizontalLines) - 1
+	while horizontalIndex >= 0
+		int currentState = array.get(horizontalLineStates, horizontalIndex)
+		int currentRole = array.get(horizontalLineRoles, horizontalIndex)
+		float currentPrice = array.get(horizontalLinePrices, horizontalIndex)
+		bool watchActive = array.get(horizontalWatchArmed, horizontalIndex)
+		int watchStartBar = array.get(horizontalWatchFirstBars, horizontalIndex)
+		float watchFirstExtreme = array.get(horizontalWatchFirstExtremes, horizontalIndex)
+		bool isDeleted = false
+
+		if currentState == SR_STATE_BROKEN
+			int brokenBarIndex = array.get(horizontalLineBrokenBars, horizontalIndex)
+			bool hasExpiry = not na(brokenBarIndex) and bar_index - brokenBarIndex >= expiryBarsAfterBreak
+			if hasExpiry
+				f_delete_sr_line_at(horizontalLines, horizontalLinePrices, horizontalLineRoles, horizontalLineStates, horizontalLineCreatedBars, horizontalLineBrokenBars, horizontalWatchArmed, horizontalWatchFirstBars, horizontalWatchFirstExtremes, horizontalIndex)
+				isDeleted := true
+
+		if not isDeleted and currentState != SR_STATE_BROKEN
+			if not watchActive
+				bool firstBreakDetected = (currentRole == SR_ROLE_RESISTANCE and close > currentPrice) or (currentRole == SR_ROLE_SUPPORT and close < currentPrice)
+				if firstBreakDetected
+					float storedExtreme = currentRole == SR_ROLE_RESISTANCE ? high : low
+					array.set(horizontalWatchArmed, horizontalIndex, true)
+					array.set(horizontalWatchFirstBars, horizontalIndex, bar_index)
+					array.set(horizontalWatchFirstExtremes, horizontalIndex, storedExtreme)
+			else
+				bool isNextBar = not na(watchStartBar) and bar_index == watchStartBar + 1
+				bool isTimingMiss = na(watchStartBar) or bar_index > watchStartBar + 1
+				bool breakConfirmed = false
+
+				if isNextBar
+					if currentRole == SR_ROLE_RESISTANCE
+						breakConfirmed := close > watchFirstExtreme
+					else
+						breakConfirmed := close < watchFirstExtreme
+
+				if breakConfirmed
+					int transitionedState = currentState
+					int transitionedRole = currentRole
+					if currentState == SR_STATE_ACTIVE
+						transitionedState := SR_STATE_FLIPPED
+						transitionedRole := currentRole == SR_ROLE_RESISTANCE ? SR_ROLE_SUPPORT : SR_ROLE_RESISTANCE
+					else
+						transitionedState := SR_STATE_BROKEN
+					array.set(horizontalLineStates, horizontalIndex, transitionedState)
+					array.set(horizontalLineRoles, horizontalIndex, transitionedRole)
+					if transitionedState == SR_STATE_BROKEN
+						array.set(horizontalLineBrokenBars, horizontalIndex, bar_index)
+					line targetLine = array.get(horizontalLines, horizontalIndex)
+					f_apply_sr_line_style(targetLine, transitionedState, transitionedRole, resistanceLineColor, supportLineColor, brokenLineColor)
+
+				bool shouldResetWatch = breakConfirmed or isNextBar or isTimingMiss
+				if shouldResetWatch
+					array.set(horizontalWatchArmed, horizontalIndex, false)
+					array.set(horizontalWatchFirstBars, horizontalIndex, na)
+					array.set(horizontalWatchFirstExtremes, horizontalIndex, na)
+
+		horizontalIndex := horizontalIndex - 1
 
 	if showHud
 		f_render_hud_minimal(hudTable, isZoneRangeAvailable, isPriceInPremiumZone, useErAdaptiveFib, hasStrongTrend, efficiencyRatioValue, appliedFibRatio, confirmedPivotType)
