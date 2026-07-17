@@ -46,3 +46,20 @@ f_calc_efficiency_ratio(sourceSeries, period) =>
 	float volatility = ta.sma(math.abs(sourceSeries - sourceSeries[1]), period) * period
 	float er = volatility == 0.0 ? 0.0 : direction / volatility
 	er
+
+// @function 直近レンジ幅を終値基準の比率(%)で算出する
+// @param rangeHigh 直近レンジ高値
+// @param rangeLow 直近レンジ安値
+// @param referencePrice 比率計算に使う基準価格
+// @return レンジ比率（%）
+f_calc_range_width_pct(rangeHigh, rangeLow, referencePrice) =>
+	float rangeWidth = math.abs(rangeHigh - rangeLow)
+	float rangeWidthPct = referencePrice == 0.0 ? 0.0 : (rangeWidth / referencePrice) * 100.0
+	rangeWidthPct
+
+// @function 横ばい圧縮レンジかどうかを判定する
+// @param rangeWidthPct 直近レンジ比率（%）
+// @param compressionThresholdPct 圧縮判定閾値（%）
+// @return 圧縮レンジと判断できる場合 true
+f_is_compressed_range(rangeWidthPct, compressionThresholdPct) =>
+	rangeWidthPct <= compressionThresholdPct

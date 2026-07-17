@@ -15,6 +15,11 @@ zz_run() =>
 	int SIGNAL_TEXT_OPAQUE = 0
 	string FIB_OPTION_23_6 = "23.6%"
 	string FIB_OPTION_38_2 = "38.2%"
+	float MIN_ADAPTIVE_DEVIATION_FLOOR_PCT = 0.1
+	float SIDEWAYS_RELAX_FACTOR_MIN = 0.55
+	float SIDEWAYS_RELAX_FACTOR_MAX = 0.95
+	float SIDEWAYS_ATR_THRESHOLD_MULTIPLIER = 2.2
+	float SIDEWAYS_BASE_THRESHOLD_MULTIPLIER = 0.8
 
 	// フェーズ0基準値。後続フェーズはこの初期入力と表示挙動を壊さないことを前提に拡張する。
 	int leftBars = input.int(5, "Pivot左バー数", minval=1, tooltip="ピボット確定に必要な左側バー数")
@@ -22,6 +27,7 @@ zz_run() =>
 	float baseDeviationPercent = input.float(1.0, "基準最小変化率(%)", minval=0.1, step=0.1, tooltip="有効なZoneレンジが未形成の間に使う反転しきい値")
 	float discountDeviationPercent = input.float(1.0, "Discount側最小変化率(%)", minval=0.1, step=0.1, tooltip="価格がレンジ下半分(Discount)にある時の反転しきい値")
 	float premiumDeviationPercent = input.float(1.0, "Premium側最小変化率(%)", minval=0.1, step=0.1, tooltip="価格がレンジ上半分(Premium)にある時の反転しきい値")
+	int minBarsBetweenReversals = input.int(3, "最小反転間隔(バー)", minval=1, maxval=20, tooltip="確定反転の連続発生を抑えるための最小バー間隔")
 	bool useWickProvisionalPivot = input.bool(true, "髭で仮ピボット即時候補", tooltip="ONで反対方向の候補をバー高値/安値で即時認定し、確定は既存しきい値で判定")
 	bool requireFibPromotion = input.bool(false, "Fib昇格必須で確定", tooltip="ONで反転候補が選択Fib比率に到達した場合のみ確定を許可")
 	string fibPromotionLevel = input.string(FIB_OPTION_23_6, "昇格Fib比率", options=[FIB_OPTION_23_6, FIB_OPTION_38_2], tooltip="昇格判定に使う戻し比率")
@@ -41,6 +47,16 @@ zz_run() =>
 	bool hasStrongTrend = efficiencyRatioValue >= erThreshold
 	float adaptiveFibRatio = hasStrongTrend ? ZZ_FIB_RATIO_23_6 : ZZ_FIB_RATIO_38_2
 	float appliedFibRatio = useErAdaptiveFib ? adaptiveFibRatio : manualFibRatio
+	int sidewaysLookbackBarsAuto = math.max(12, erPeriod + rightBars)
+	int sidewaysAtrPeriodAuto = math.max(5, int(math.round(erPeriod * 0.5)))
+	float sidewaysAtrPercent = close == 0.0 ? 0.0 : (ta.atr(sidewaysAtrPeriodAuto) / close) * 100.0
+	float sidewaysCompressionThresholdPctAuto = math.max(sidewaysAtrPercent * SIDEWAYS_ATR_THRESHOLD_MULTIPLIER, baseDeviationPercent * SIDEWAYS_BASE_THRESHOLD_MULTIPLIER)
+	float sidewaysTrendWeakness = math.max(0.0, erThreshold - efficiencyRatioValue)
+	float sidewaysRelaxFactorAuto = math.max(SIDEWAYS_RELAX_FACTOR_MIN, math.min(SIDEWAYS_RELAX_FACTOR_MAX, 1.0 - sidewaysTrendWeakness * 1.2))
+	float sidewaysRangeHigh = ta.highest(high, sidewaysLookbackBarsAuto)
+	float sidewaysRangeLow = ta.lowest(low, sidewaysLookbackBarsAuto)
+	float sidewaysRangeWidthPct = f_calc_range_width_pct(sidewaysRangeHigh, sidewaysRangeLow, close)
+	bool isSidewaysCompressed = efficiencyRatioValue < erThreshold and f_is_compressed_range(sidewaysRangeWidthPct, sidewaysCompressionThresholdPctAuto)
 
 	// フェーズ0基準: ta.pivot* による確定候補だけを使う。
 	float pivotHigh = ta.pivothigh(high, leftBars, rightBars)
@@ -56,11 +72,14 @@ zz_run() =>
 	var int previousConfirmedPivotType = PIVOT_TYPE_NONE
 	var float previousConfirmedPivotPrice = na
 	var int previousConfirmedPivotTime = na
+	var int confirmedPivotBarIndex = na
+	var int previousConfirmedPivotBarIndex = na
 
 	// フェーズ1: 仮ピボット候補状態を管理する。
 	var int candidatePivotType = PIVOT_TYPE_NONE
 	var float candidatePivotPrice = na
 	var int candidatePivotTime = na
+	var int candidatePivotBarIndex = na
 
 	// フェーズ1: 描画状態を管理する。
 	var array<line> confirmedLegLines = array.new<line>()
@@ -80,6 +99,7 @@ zz_run() =>
 	float zoneMidPrice = isZoneRangeAvailable ? confirmedRangeLow + (confirmedRangeHigh - confirmedRangeLow) * 0.5 : na
 	bool isPriceInPremiumZone = isZoneRangeAvailable and close >= zoneMidPrice
 	float activeDeviationPercent = isZoneRangeAvailable ? (isPriceInPremiumZone ? premiumDeviationPercent : discountDeviationPercent) : baseDeviationPercent
+	float adaptiveDeviationPercent = isSidewaysCompressed ? math.max(activeDeviationPercent * sidewaysRelaxFactorAuto, MIN_ADAPTIVE_DEVIATION_FLOOR_PCT) : activeDeviationPercent
 	int barStartConfirmedType = confirmedPivotType
 	bool fibPromotionSignal = false
 	float fibPromotionSignalPrice = na
@@ -91,10 +111,12 @@ zz_run() =>
 	bool hasUpperCandidate = hasPivotHigh or (useWickProvisionalPivot and barStartConfirmedType == PIVOT_TYPE_DOWN and not na(confirmedPivotPrice))
 	float upperCandidatePrice = hasPivotHigh ? pivotHigh : high
 	int upperCandidateTime = hasPivotHigh ? pivotTime : time
+	int upperCandidateBarIndex = hasPivotHigh ? bar_index[rightBars] : bar_index
 
 	bool hasLowerCandidate = hasPivotLow or (useWickProvisionalPivot and barStartConfirmedType == PIVOT_TYPE_UP and not na(confirmedPivotPrice))
 	float lowerCandidatePrice = hasPivotLow ? pivotLow : low
 	int lowerCandidateTime = hasPivotLow ? pivotTime : time
+	int lowerCandidateBarIndex = hasPivotLow ? bar_index[rightBars] : bar_index
 
 	if hasPivotHigh and hasPivotLow
 		if confirmedPivotType == PIVOT_TYPE_UP
@@ -108,10 +130,12 @@ zz_run() =>
 		candidatePivotType := PIVOT_TYPE_UP
 		candidatePivotPrice := upperCandidatePrice
 		candidatePivotTime := upperCandidateTime
+		candidatePivotBarIndex := upperCandidateBarIndex
 		if na(confirmedPivotPrice)
 			confirmedPivotType := candidatePivotType
 			confirmedPivotPrice := candidatePivotPrice
 			confirmedPivotTime := candidatePivotTime
+			confirmedPivotBarIndex := candidatePivotBarIndex
 			confirmedRangeHigh := candidatePivotPrice
 		else if confirmedPivotType == candidatePivotType
 			bool moreExtreme = candidatePivotPrice > confirmedPivotPrice
@@ -119,12 +143,14 @@ zz_run() =>
 				// 同方向のより強い高値が出た場合は、直近レッグ終点のみ更新して過剰確定を防ぐ。
 				confirmedPivotPrice := candidatePivotPrice
 				confirmedPivotTime := candidatePivotTime
+				confirmedPivotBarIndex := candidatePivotBarIndex
 				confirmedRangeHigh := candidatePivotPrice
 				if array.size(confirmedLegLines) > 0
 					line prevLine = array.get(confirmedLegLines, array.size(confirmedLegLines) - 1)
 					line.set_xy2(prevLine, candidatePivotTime, candidatePivotPrice)
 		else
 			float changePct = f_calc_change_pct(confirmedPivotPrice, candidatePivotPrice)
+			bool hasEnoughReversalGap = na(confirmedPivotBarIndex) or (candidatePivotBarIndex - confirmedPivotBarIndex >= minBarsBetweenReversals)
 			float baseLegLength = na(previousConfirmedPivotPrice) ? na : math.abs(confirmedPivotPrice - previousConfirmedPivotPrice)
 			float reversalMoveLength = math.abs(candidatePivotPrice - confirmedPivotPrice)
 			bool isFibPromoted = f_check_fib_promotion(baseLegLength, reversalMoveLength, appliedFibRatio)
@@ -137,7 +163,7 @@ zz_run() =>
 				fibPromotionSignalTime := candidatePivotTime
 				promotionLatched := true
 			bool passesFibPromotion = f_can_confirm_by_fib_promotion(baseLegLength, reversalMoveLength, appliedFibRatio, requireFibPromotion)
-			if changePct >= activeDeviationPercent and passesFibPromotion
+			if changePct >= adaptiveDeviationPercent and passesFibPromotion and hasEnoughReversalGap
 				// 反転は最小変化率を満たした時のみ確定し、基準線として保持する。
 				color legColor = candidatePivotType == 1 ? upColor : downColor
 				line newLine = line.new(confirmedPivotTime, confirmedPivotPrice, candidatePivotTime, candidatePivotPrice, xloc=xloc.bar_time, color=legColor, width=lineWidth)
@@ -148,9 +174,11 @@ zz_run() =>
 				previousConfirmedPivotType := confirmedPivotType
 				previousConfirmedPivotPrice := confirmedPivotPrice
 				previousConfirmedPivotTime := confirmedPivotTime
+				previousConfirmedPivotBarIndex := confirmedPivotBarIndex
 				confirmedPivotType := candidatePivotType
 				confirmedPivotPrice := candidatePivotPrice
 				confirmedPivotTime := candidatePivotTime
+				confirmedPivotBarIndex := candidatePivotBarIndex
 				confirmedRangeHigh := candidatePivotPrice
 				reversalConfirmSignal := true
 				reversalConfirmSignalPrice := candidatePivotPrice
@@ -162,10 +190,12 @@ zz_run() =>
 		candidatePivotType := PIVOT_TYPE_DOWN
 		candidatePivotPrice := lowerCandidatePrice
 		candidatePivotTime := lowerCandidateTime
+		candidatePivotBarIndex := lowerCandidateBarIndex
 		if na(confirmedPivotPrice)
 			confirmedPivotType := candidatePivotType
 			confirmedPivotPrice := candidatePivotPrice
 			confirmedPivotTime := candidatePivotTime
+			confirmedPivotBarIndex := candidatePivotBarIndex
 			confirmedRangeLow := candidatePivotPrice
 		else if confirmedPivotType == candidatePivotType
 			bool moreExtreme = candidatePivotPrice < confirmedPivotPrice
@@ -173,12 +203,14 @@ zz_run() =>
 				// 同方向のより強い安値が出た場合は、直近レッグ終点のみ更新して過剰確定を防ぐ。
 				confirmedPivotPrice := candidatePivotPrice
 				confirmedPivotTime := candidatePivotTime
+				confirmedPivotBarIndex := candidatePivotBarIndex
 				confirmedRangeLow := candidatePivotPrice
 				if array.size(confirmedLegLines) > 0
 					line prevLine = array.get(confirmedLegLines, array.size(confirmedLegLines) - 1)
 					line.set_xy2(prevLine, candidatePivotTime, candidatePivotPrice)
 		else
 			float changePct = f_calc_change_pct(confirmedPivotPrice, candidatePivotPrice)
+			bool hasEnoughReversalGap = na(confirmedPivotBarIndex) or (candidatePivotBarIndex - confirmedPivotBarIndex >= minBarsBetweenReversals)
 			float baseLegLength = na(previousConfirmedPivotPrice) ? na : math.abs(confirmedPivotPrice - previousConfirmedPivotPrice)
 			float reversalMoveLength = math.abs(candidatePivotPrice - confirmedPivotPrice)
 			bool isFibPromoted = f_check_fib_promotion(baseLegLength, reversalMoveLength, appliedFibRatio)
@@ -191,7 +223,7 @@ zz_run() =>
 				fibPromotionSignalTime := candidatePivotTime
 				promotionLatched := true
 			bool passesFibPromotion = f_can_confirm_by_fib_promotion(baseLegLength, reversalMoveLength, appliedFibRatio, requireFibPromotion)
-			if changePct >= activeDeviationPercent and passesFibPromotion
+			if changePct >= adaptiveDeviationPercent and passesFibPromotion and hasEnoughReversalGap
 				// 反転は最小変化率を満たした時のみ確定し、基準線として保持する。
 				color legColor = candidatePivotType == 1 ? upColor : downColor
 				line newLine = line.new(confirmedPivotTime, confirmedPivotPrice, candidatePivotTime, candidatePivotPrice, xloc=xloc.bar_time, color=legColor, width=lineWidth)
@@ -202,9 +234,11 @@ zz_run() =>
 				previousConfirmedPivotType := confirmedPivotType
 				previousConfirmedPivotPrice := confirmedPivotPrice
 				previousConfirmedPivotTime := confirmedPivotTime
+				previousConfirmedPivotBarIndex := confirmedPivotBarIndex
 				confirmedPivotType := candidatePivotType
 				confirmedPivotPrice := candidatePivotPrice
 				confirmedPivotTime := candidatePivotTime
+				confirmedPivotBarIndex := candidatePivotBarIndex
 				confirmedRangeLow := candidatePivotPrice
 				reversalConfirmSignal := true
 				reversalConfirmSignalPrice := candidatePivotPrice

@@ -159,3 +159,18 @@
 1. `python scripts/build.py` が成功する。
 2. `python scripts/phase_gate.py --skip-build` が `[PASS]` で終了する。
 3. `src/zigzag/*.pine` と `dist/compiled_script.pine` でエラーがない。
+
+## 改善 Phase1 実装メモ（ピボット精度: バランス重視）
+1. 横ばい圧縮レンジを自動判定し、該当時のみ反転しきい値を動的に緩和する仕組みに変更した。
+- ER強弱とATR比率を使って圧縮判定閾値を自動算出する。
+- 緩和倍率もERの弱さに応じて自動算出し、過剰緩和を防ぐ上下限を設ける。
+2. 連続ノイズ反転を抑えるため、`最小反転間隔(バー)` を追加した。
+3. 既存のZone/Fib/ERゲートは維持し、最終確定条件を以下へ拡張した。
+- `changePct >= adaptiveDeviationPercent`
+- `passesFibPromotion`
+- `hasEnoughReversalGap`
+
+## 改善 Phase1 確認チェックリスト
+1. ヨコヨコ区間で、従来より山谷の取りこぼしが減る。
+2. 急な反転連発が `最小反転間隔(バー)` で抑制される。
+3. トレンド区間ではしきい値緩和がほぼ効かず、従来のトレンド追随挙動を維持する。
