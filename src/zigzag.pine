@@ -1,0 +1,124 @@
+// ZigZag pure computation module.
+// This file contains no drawing code and can be combined with other theories.
+
+// @function ZigZag アンカー種別
+enum ZigZagAnchorType
+    none = 0
+    high = 1
+    low = -1
+
+// @function 高値ピボットを検出する
+// @param highSeries 高値系列
+// @param left ピボット判定の左側バー数
+// @param right ピボット判定の右側バー数
+// @return 高値ピボット価格または na
+float find_pivot_high(float highSeries, int left, int right) =>
+    ta.pivothigh(highSeries, left, right)
+
+// @function 安値ピボットを検出する
+// @param lowSeries 安値系列
+// @param left ピボット判定の左側バー数
+// @param right ピボット判定の右側バー数
+// @return 安値ピボット価格または na
+float find_pivot_low(float lowSeries, int left, int right) =>
+    ta.pivotlow(lowSeries, left, right)
+
+// @function しきい値を価格単位に変換する
+// @param threshold 反転に必要な閾値
+// @param thresholdIsPercent 閾値をパーセントとして扱うか
+// @param lastPrice 直近アンカー価格
+// @return 価格単位のしきい値
+float resolve_threshold(float threshold, bool thresholdIsPercent, float lastPrice) =>
+    float thresholdPx = threshold
+    if thresholdIsPercent and not na(lastPrice)
+        thresholdPx := math.abs(lastPrice) * threshold / 100.0
+    math.max(thresholdPx, 0.0)
+
+// @function 現在のレッグで追跡する極値を更新する
+// @param anchorType 現在アンカーの種類
+// @param currentExtreme 追跡中の極値
+// @param highSeries 現在バーの高値
+// @param lowSeries 現在バーの安値
+// @return 更新後の極値
+float update_extreme_val(ZigZagAnchorType anchorType, float currentExtreme, float highSeries, float lowSeries) =>
+    if anchorType == ZigZagAnchorType.high
+        if na(currentExtreme) or lowSeries < currentExtreme
+            currentExtreme := lowSeries
+    else if anchorType == ZigZagAnchorType.low
+        if na(currentExtreme) or highSeries > currentExtreme
+            currentExtreme := highSeries
+    currentExtreme
+
+// @function 高値アンカーの延長判定
+bool should_extend_high(ZigZagAnchorType anchorType, bool isPivotHigh, float pivotHigh, float lastPrice) =>
+    anchorType == ZigZagAnchorType.high and isPivotHigh and pivotHigh > lastPrice
+
+// @function 安値アンカーの延長判定
+bool should_extend_low(ZigZagAnchorType anchorType, bool isPivotLow, float pivotLow, float lastPrice) =>
+    anchorType == ZigZagAnchorType.low and isPivotLow and pivotLow < lastPrice
+
+// @function 高値アンカーから安値アンカーへの反転判定
+bool should_reverse_to_low(ZigZagAnchorType anchorType, bool isPivotLow, float lastPrice, float extremeVal, float thresholdPx) =>
+    anchorType == ZigZagAnchorType.high and isPivotLow and not na(extremeVal) and lastPrice - extremeVal >= thresholdPx
+
+// @function 安値アンカーから高値アンカーへの反転判定
+bool should_reverse_to_high(ZigZagAnchorType anchorType, bool isPivotHigh, float lastPrice, float extremeVal, float thresholdPx) =>
+    anchorType == ZigZagAnchorType.low and isPivotHigh and not na(extremeVal) and extremeVal - lastPrice >= thresholdPx
+
+// @function ZigZag の現在アンカーを計算する。確定済みのスイング方向を維持し、
+//           既存アンカーの延長・反転判定を行う。
+// @param highSeries  高値系列
+// @param lowSeries   安値系列
+// @param left  Pivot detection の左側バー数
+// @param right Pivot detection の右側バー数
+// @param threshold 反転に必要な値幅。thresholdIsPercent=false の場合は価格単位、
+//                  true の場合は直近アンカー価格のパーセント比として解釈される。
+// @param thresholdIsPercent threshold をパーセントとして扱うかどうか
+// @return 現在の ZigZag アンカー価格系列。未初期化期間は na。
+zigzag_core(float highSeries, float lowSeries, int left, int right, float threshold, bool thresholdIsPercent) =>
+    float pivotHigh = find_pivot_high(highSeries, left, right)
+    float pivotLow = find_pivot_low(lowSeries, left, right)
+    bool isPivotHigh = not na(pivotHigh)
+    bool isPivotLow = not na(pivotLow)
+
+    var ZigZagAnchorType lastType = ZigZagAnchorType.none
+
+    if isPivotHigh and isPivotLow
+        // 同一バーで高値・安値ピボットが同時に検出された場合は、
+        // 現在のアンカー方向を延長できる側を優先する（反対側は次バー以降に持ち越し）。
+        if lastType == ZigZagAnchorType.low
+            isPivotHigh := false
+        else
+            isPivotLow := false
+
+    var float lastPrice = na
+    var float extremeVal = na
+
+    float thresholdPx = resolve_threshold(threshold, thresholdIsPercent, lastPrice)
+    extremeVal := update_extreme_val(lastType, extremeVal, highSeries, lowSeries)
+
+    if lastType == ZigZagAnchorType.none
+        if isPivotHigh
+            lastType := ZigZagAnchorType.high
+            lastPrice := pivotHigh
+            extremeVal := lowSeries
+        else if isPivotLow
+            lastType := ZigZagAnchorType.low
+            lastPrice := pivotLow
+            extremeVal := highSeries
+    else if should_extend_high(lastType, isPivotHigh, pivotHigh, lastPrice)
+        lastPrice := pivotHigh
+        extremeVal := lowSeries
+    else if should_extend_low(lastType, isPivotLow, pivotLow, lastPrice)
+        lastPrice := pivotLow
+        extremeVal := highSeries
+    else if should_reverse_to_low(lastType, isPivotLow, lastPrice, extremeVal, thresholdPx)
+        lastType := ZigZagAnchorType.low
+        lastPrice := extremeVal
+        extremeVal := highSeries
+    else if should_reverse_to_high(lastType, isPivotHigh, lastPrice, extremeVal, thresholdPx)
+        lastType := ZigZagAnchorType.high
+        lastPrice := extremeVal
+        extremeVal := lowSeries
+
+    lastPrice
