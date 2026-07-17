@@ -1,0 +1,6 @@
+// @function ZigZag機能の分割モジュールを集約するエントリ
+// @param なし
+// @return なし
+//#include "zigzag/core_math.pine"
+//#include "zigzag/rendering.pine"
+//#include "zigzag/state_machine.pine"

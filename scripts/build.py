@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 
 SRC_DIR = "src"
 DIST_DIR = "dist"
@@ -35,8 +36,11 @@ def build():
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(bundled_code)
         print(f"[SUCCESS] ビルド完了! 出力先: {out_path}")
+        return True
     except Exception as e:
         print(f"[ERROR] ビルド失敗: {e}")
+        return False
 
 if __name__ == "__main__":
-    build()
+    is_success = build()
+    sys.exit(0 if is_success else 1)

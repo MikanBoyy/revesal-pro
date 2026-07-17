@@ -1,68 +1,161 @@
-# ZigZag 仕様書
+# ZigZag 仕様メモ（フェーズ0基準）
 
-このドキュメントは、`src/zigzag.pine` に実装された ZigZag 計算ロジックの仕様と設計意図を説明します。
+## 目的
+次フェーズで機能拡張しても、最低限のZigZag表示品質を維持するための基準を固定する。
 
-## 概要
-`src/zigzag.pine` は描画に依存しない純粋計算モジュールです。`main.pine` から `zigzag_core(...)` を呼び出し、計算結果を `zigzag_draw(...)` などの描画ロジックに渡します。
+## 分割構成（リファクタ後）
+`//#include` による疑似分割で、以下の構成に整理した。
 
-内部では `enum ZigZagAnchorType` を用いてアンカー状態を明確にし、処理を小さな補助関数に分離しています。
+1. `src/zigzag/index.pine`
+- ZigZag機能の集約エントリ。
 
-## API
+2. `src/zigzag/core_math.pine`
+- ZigZagに依存しない算出ロジック（変化率、Fib比率、Fib昇格判定、ER計算）。
 
-### zigzag_core(high, low, left, right, threshold, thresholdIsPercent)
+3. `src/zigzag/rendering.pine`
+- 描画補助ロジック（シグナルラベル上限制御、HUD描画）。
 
-- 説明
-  - 高値と安値の系列から現在確定中の ZigZag アンカー価格を算出します。
-  - 既存アンカーの延長、極値追跡、反転判定を行います。
+4. `src/zigzag/state_machine.pine`
+- ZigZag本体の状態遷移（候補生成、同方向更新、反転確定、表示呼び出し）。
 
-- 引数
-  - `high` (float): 高値系列
-  - `low` (float): 安値系列
-  - `left` (int): ピボット判定の左側バー数
-  - `right` (int): ピボット判定の右側バー数
-  - `threshold` (float): 反転に必要な値幅。`thresholdIsPercent=false` の場合は価格単位。
-  - `thresholdIsPercent` (bool): `threshold` を直近アンカー価格のパーセント比として扱うかどうか
+5. `src/zigzag.pine`
+- 旧include互換のラッパー（`src/zigzag/index.pine` へ委譲）。
 
-- 戻り値
-  - `float` 系列: 現在確定中の ZigZag アンカー価格。アンカー未確定期間は `na`。
+## フェーズ0の基準挙動
+1. 確定レッグは `ta.pivothigh / ta.pivotlow` の候補のみを使用する。
+2. 同方向の候補が更新されたときは、既存レッグの終点更新で対応し、新規確定線は増やさない。
+3. 反転確定は「前回確定ピボットからの変化率」が最小変化率を満たす場合のみ許可する。
+4. 未確定レッグは常に最新1本のみ描画し、毎バー再作成で追従させる。
+5. ライン配列は上限本数を超えたら古い順に削除し、描画上限超過を防ぐ。
 
-### 補助関数
+## 既定入力（フェーズ0）
+- Pivot左バー数: 5
+- Pivot右バー数: 5
+- 最小変化率(%): 1.0
+- 表示ライン本数: 300
+- 未確定レッグを表示: true
+- ライン幅: 2
 
-`zigzag.pine` は内部に以下のような小さなメソッドを持ち、処理を分離しています。
+## 確認チェックリスト
+1. 確定レッグの色が上昇/下降で切り替わる。
+2. 未確定レッグが点線で1本だけ表示される。
+3. 相場が同方向に伸びると、直近レッグ終点のみが延長される。
+4. 反転が小さい場合は確定せず、しきい値超過でのみ確定する。
+5. 長時間表示しても古い線が削除され、描画が破綻しない。
 
-- `find_pivot_high(...)` / `find_pivot_low(...)` - ピボット検出を抽象化
-- `resolve_threshold(...)` - パーセント基準と価格単位のしきい値計算
-- `update_extreme_val(...)` - 現在レッグの極値追跡
-- `should_extend_high(...)`, `should_extend_low(...)` - 延長判定
-- `should_reverse_to_low(...)`, `should_reverse_to_high(...)` - 反転判定
+## 運用ルール
+- フェーズ1以降はこの基準を回帰テストとして維持する。
+- 仕様変更時は本ファイルの基準挙動とチェックリストを更新してから実装する。
 
-## 設計
+## フェーズ1実装メモ（状態管理の責務分離）
+1. `confirmedPivotType / confirmedPivotPrice / confirmedPivotTime` を確定ピボット状態として分離した。
+2. `candidatePivotType / candidatePivotPrice / candidatePivotTime` を仮ピボット候補状態として分離した。
+3. `confirmedLegLines / realtimeLegLine` を描画状態として分離した。
+4. 挙動互換を優先し、反転確定条件と同方向終点更新ロジックはフェーズ0から変更していない。
 
-`zigzag_core()` は `ta.pivothigh` / `ta.pivotlow` の確定バーのみを利用し、
-描画ロジックと切り離した計算専用の API を提供します。
+## フェーズ2実装メモ（Zone境界による感度切替）
+1. `confirmedRangeHigh / confirmedRangeLow` を追加し、直近確定レンジの高安を保持する。
+2. Zone境界は `confirmedRangeLow + (confirmedRangeHigh - confirmedRangeLow) * 0.5` で算出する。
+3. 判定価格は終値 `close` を使用し、上半分を Premium、下半分を Discount として扱う。
+4. 反転しきい値は以下の優先度で適用する。
+- 有効レンジあり: Premium側最小変化率(%) または Discount側最小変化率(%)
+- 有効レンジなし: 基準最小変化率(%)
 
-### 処理フロー
+## フェーズ2確認チェックリスト
+1. 既定値（各しきい値1.0）ではフェーズ1と同等の視覚挙動になる。
+2. Premium側しきい値を上げると、レンジ上半分で反転確定が起きにくくなる。
+3. Discount側しきい値を上げると、レンジ下半分で反転確定が起きにくくなる。
 
-1. `ta.pivothigh` / `ta.pivotlow` で高値/安値ピボットを検出
-2. 現在のスイング方向に応じて極値（高値アンカー時は最安値、安値アンカー時は最高値）を追跡
-3. 逆方向ピボットとしきい値の両方が成立した場合に反転を確定
-4. 反転時には現在の極値を次のアンカーとして採用
+## フェーズ3実装メモ（髭による仮ピボット即時認定）
+1. `髭で仮ピボット即時候補` 入力を追加し、反対方向候補を高値/安値で即時認定できるようにした。
+2. 仮候補の生成は以下の優先で行う。
+- Pivot候補がある場合: `ta.pivot*` 候補を採用
+- Pivot候補がない場合かつ髭モードON: 現在バーの `high` または `low` を候補採用
+3. 確定判定はフェーズ2までと同様に、`changePct >= activeDeviationPercent` を維持する。
+4. 同一バーでの二重反転を避けるため、バー開始時の確定方向を使って髭候補方向を固定する。
 
-## 使用例
+## フェーズ3確認チェックリスト
+1. 髭モードONで、Pivot確定待ちより早く未確定レッグ終点が追従する。
+2. 髭モードONでも、しきい値未達なら確定線は増えない。
+3. 髭モードOFFで、フェーズ2相当の遅延候補挙動に戻る。
 
-`src/main.pine` では以下のように利用します。
+## フェーズ4実装メモ（Fib昇格ゲート）
+1. `Fib昇格必須で確定` 入力を追加し、反転確定をFib昇格でゲートできるようにした。
+2. `昇格Fib比率` は `23.6% / 38.2%` から選択可能にした。
+3. 昇格判定は `直近確定レッグ長 * Fib比率` を必要変位量とし、反転候補の変位が到達したら昇格成立とする。
+4. 昇格必須モードOFF時は従来どおり、変化率しきい値のみで確定する。
 
-```pine
-//#include "zigzag.pine"
+## フェーズ4確認チェックリスト
+1. `Fib昇格必須で確定 = OFF` で、フェーズ3と同等の確定頻度になる。
+2. `Fib昇格必須で確定 = ON` で、反転確定の回数が減る。
+3. `昇格Fib比率 = 38.2%` の方が `23.6%` より厳しく、確定が遅れる。
 
-left = input.int(5, "Left", minval=1)
-right = input.int(5, "Right", minval=1)
-zigzagWidth = input.int(2, "ZigZag Line Width")
-threshold = input.float(1.5, "Threshold", minval=0.0)
-thresholdIsPercent = input.bool(true, "Threshold is Percent")
-upColor = input.color(color.new(color.lime, 0), "Up ZigZag Color")
-downColor = input.color(color.new(color.red, 0), "Down ZigZag Color")
+## フェーズ5実装メモ（ER連動Fib切替）
+1. `ER連動で昇格Fib比率を切替` を追加し、ON時はERで昇格Fib比率を自動切替する。
+2. ERの既定値は `ER期間=20`、`ER強弱閾値=0.45` とした。
+3. 切替ルールは以下とする。
+- ER >= 0.45: 強い相場として `23.6%`
+- ER < 0.45: 弱い相場として `38.2%`
+4. ER連動OFF時は、既存の `昇格Fib比率` 手動選択値をそのまま使う。
 
-zigzagValue = zigzag_core(high, low, left, right, threshold, thresholdIsPercent)
-zigzag_draw(zigzagValue, zigzagWidth, upColor, downColor, right)
-```
+## フェーズ5確認チェックリスト
+1. ER連動ON時、同一設定でも相場状態で確定タイミングが変化する。
+2. ER連動ONかつ `Fib昇格必須で確定=ON` で、トレンド時は反転確定が相対的に早くなる。
+3. ER連動OFFで、フェーズ4と同じ手動Fib挙動に戻る。
+
+## フェーズ6実装メモ（HUD/シグナル最小構成）
+1. HUD表示を追加し、以下4項目を右上テーブルで表示する。
+- 現在Zone（Premium / Discount / Range未形成）
+- ER状態（強い/弱い + ER値、または手動）
+- 適用Fib比率（実際に判定へ使った比率）
+- 最新確定方向（上方向/下方向/未確定）
+2. シグナルは最小構成として2種類のみ追加した。
+- `PROMO`: Fib昇格が初回成立したタイミング
+- `REV↑ / REV↓`: 反転確定が成立したタイミング
+3. シグナルラベルは配列で管理し、保持本数上限を超えた古いラベルを削除する。
+
+## フェーズ6確認チェックリスト
+1. HUD ONで4項目が更新され、HUD OFFで非表示になる。
+2. Fib昇格成立時に `PROMO` が1回だけ表示される。
+3. 確定反転時に `REV↑` または `REV↓` が表示される。
+4. 長時間表示でもシグナル本数上限が機能し、描画が破綻しない。
+
+## フェーズ7実装メモ（コンパイル物同期ゲート）
+1. `scripts/build.py` は成功時 `0`、失敗時 `1` を返すようにし、CIや手動運用で判定可能にした。
+2. `scripts/phase_gate.py` を追加し、以下を自動検証する。
+- `build.py` 実行による `dist/compiled_script.pine` 同期
+- distに必須ヘッダと `zz_run()` 呼び出しが含まれること
+- `src/*.pine` と `dist/compiled_script.pine` にUTF-8 BOMがないこと
+
+## フェーズ7確認チェックリスト
+1. `python scripts/phase_gate.py` が `[PASS]` で終了する。
+2. `dist/compiled_script.pine` をTradingView貼り付け用の正本として扱う。
+
+## フェーズ8実装メモ（段階リリース手順の固定）
+1. リリース前に `scripts/phase_gate.py` を必須実行する。
+2. ゲート通過後、TradingView手動確認を短期足/長期足で実施する。
+3. 手動確認項目は `phase_gate.py` の `[MANUAL CHECKLIST]` 出力に統一する。
+
+## フェーズ8確認チェックリスト
+1. 短期足（例: 5m/15m）で表示破綻がない。
+2. 長期足（例: 1h/4h）で表示破綻がない。
+3. HUD・シグナル・未確定点線のON/OFFが意図どおり動作する。
+
+## リファクタ Phase B/C/D 実装メモ（仕様維持）
+1. Phase B: 疑似モジュール分割を実施した。
+- `core_math.pine` に算出ロジックを集約
+- `rendering.pine` にHUD/シグナル描画補助を分離
+- `state_machine.pine` に状態遷移本体を分離
+2. Phase C: 内部識別子を意味中心に統一した。
+- 関数名を `f_calc_* / f_get_* / f_check_*` 系へ統一
+- 変数名を `appliedFibRatio` など役割ベースへ統一
+3. Phase D: マジックナンバーと固定文言の定数化を実施した。
+- Fib比率（0.236/0.382）を共通定数化
+- ピボット方向コード（1/-1/0）を命名定数化
+- HUDヘッダ文字列/背景透過率、シグナル文字列を定数化
+4. いずれも入力表示名・既定値・描画見た目・判定ロジックは変更していない。
+
+## リファクタ確認チェックリスト
+1. `python scripts/build.py` が成功する。
+2. `python scripts/phase_gate.py --skip-build` が `[PASS]` で終了する。
+3. `src/zigzag/*.pine` と `dist/compiled_script.pine` でエラーがない。
