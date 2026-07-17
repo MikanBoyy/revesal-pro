@@ -49,15 +49,15 @@ zz_run() =>
     int SR_STATE_ACTIVE = 1
     int SR_STATE_FLIPPED = 2
     int SR_STATE_BROKEN = 3
-    string SIGNAL_TEXT_REVERSAL_UP = "上反転"
-    string SIGNAL_TEXT_REVERSAL_DOWN = "下反転"
     int TABLE_COLUMNS = 2
     int TABLE_ROWS = 4
     int TABLE_LAST_COLUMN_INDEX = 1
     int TABLE_LAST_ROW_INDEX = 3
-    int SIGNAL_TEXT_OPAQUE = 0
+    int SIGNAL_LABEL_BG_ALPHA = 86
     float SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER = 0.35
     int SIGNAL_LABEL_ATR_PERIOD = 14
+    color HIGH_SIDE_LABEL_COLOR = #20a35a
+    color LOW_SIDE_LABEL_COLOR = #d45555
 
     int atrPeriod = input.int(14, "ATR期間", minval=1, tooltip="動的反転閾値の基準となるATR期間")
     float atrMultiplier = input.float(1.8, "ATR乗数k", minval=0.1, step=0.1, tooltip="反転閾値 = (k×ATR)×(2.0-ER) のk")
@@ -88,6 +88,8 @@ zz_run() =>
     var float confirmedPivotPrice = na
     var int confirmedPivotTime = na
     var int confirmedPivotBarIndex = na
+    var float lastConfirmedHighPivotPrice = na
+    var float lastConfirmedLowPivotPrice = na
 
     // activeLegDirection=UPは暫定高値を追跡中、DOWNは暫定安値を追跡中を示す。
     var int activeLegDirection = PIVOT_TYPE_NONE
@@ -113,6 +115,8 @@ zz_run() =>
     bool reversalConfirmSignal = false
     float reversalConfirmSignalPrice = na
     int reversalConfirmSignalTime = na
+    string reversalSignalLabelText = ""
+    color reversalSignalLabelColor = na
 
     if na(confirmedPivotPrice)
         confirmedPivotPrice := close
@@ -155,6 +159,10 @@ zz_run() =>
             confirmedPivotPrice := legExtremePrice
             confirmedPivotTime := legExtremeTime
             confirmedPivotBarIndex := legExtremeBarIndex
+            bool isHigherHigh = na(lastConfirmedHighPivotPrice) or legExtremePrice >= lastConfirmedHighPivotPrice
+            reversalSignalLabelText := isHigherHigh ? "HH" : "LH"
+            reversalSignalLabelColor := str.substring(reversalSignalLabelText, 0, 1) == "H" ? HIGH_SIDE_LABEL_COLOR : LOW_SIDE_LABEL_COLOR
+            lastConfirmedHighPivotPrice := legExtremePrice
             reversalConfirmSignal := true
             reversalConfirmSignalPrice := legExtremePrice
             reversalConfirmSignalTime := legExtremeTime
@@ -193,6 +201,10 @@ zz_run() =>
             confirmedPivotPrice := legExtremePrice
             confirmedPivotTime := legExtremeTime
             confirmedPivotBarIndex := legExtremeBarIndex
+            bool isLowerLow = na(lastConfirmedLowPivotPrice) or legExtremePrice <= lastConfirmedLowPivotPrice
+            reversalSignalLabelText := isLowerLow ? "LL" : "HL"
+            reversalSignalLabelColor := str.substring(reversalSignalLabelText, 0, 1) == "H" ? HIGH_SIDE_LABEL_COLOR : LOW_SIDE_LABEL_COLOR
+            lastConfirmedLowPivotPrice := legExtremePrice
             reversalConfirmSignal := true
             reversalConfirmSignalPrice := legExtremePrice
             reversalConfirmSignalTime := legExtremeTime
@@ -203,11 +215,9 @@ zz_run() =>
             legExtremeBarIndex := bar_index
             weakBreakCount := 0
 
-    if showSignals and reversalConfirmSignal and not na(reversalConfirmSignalPrice)
-        string reversalText = confirmedPivotType == PIVOT_TYPE_UP ? SIGNAL_TEXT_REVERSAL_UP : SIGNAL_TEXT_REVERSAL_DOWN
+    if showSignals and reversalConfirmSignal and not na(reversalConfirmSignalPrice) and str.length(reversalSignalLabelText) > 0
         float reversalLabelPrice = confirmedPivotType == PIVOT_TYPE_UP ? reversalConfirmSignalPrice + signalLabelOffsetPrice : reversalConfirmSignalPrice - signalLabelOffsetPrice
-        color reversalColor = confirmedPivotType == PIVOT_TYPE_UP ? upColor : downColor
-        label reversalLabel = label.new(reversalConfirmSignalTime, reversalLabelPrice, reversalText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.white, color=color.new(reversalColor, SIGNAL_TEXT_OPAQUE), size=size.tiny)
+        label reversalLabel = label.new(reversalConfirmSignalTime, reversalLabelPrice, reversalSignalLabelText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.new(reversalSignalLabelColor, 0), color=color.new(reversalSignalLabelColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
         f_append_signal_label_with_cap(signalLabels, reversalLabel, maxSignalLabels)
 
     if reversalConfirmSignal and not na(confirmedPivotPrice) and not na(confirmedPivotTime)
