@@ -47,6 +47,15 @@ f_calc_efficiency_ratio(sourceSeries, period) =>
 	float er = volatility == 0.0 ? 0.0 : direction / volatility
 	er
 
+// @function ATRとERから動的な反転閾値（価格幅）を算出する
+// @param atrValue ATR値
+// @param erValue ER値（0.0-1.0）
+// @param atrMultiplier ATR乗数k
+// @return 反転閾値（価格幅）
+f_calc_dynamic_threshold_price(atrValue, erValue, atrMultiplier) =>
+	float thresholdPrice = (atrMultiplier * atrValue) * (2.0 - erValue)
+	thresholdPrice
+
 // @function 直近レンジ幅を終値基準の比率(%)で算出する
 // @param rangeHigh 直近レンジ高値
 // @param rangeLow 直近レンジ安値

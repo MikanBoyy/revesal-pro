@@ -7,10 +7,10 @@
 // @param brokenColor 完全ブレイク色
 // @return なし
 f_apply_sr_line_style(targetLine, lineState, lineRole, resistanceColor, supportColor, brokenColor) =>
-	appliedStyle = lineState == 3 ? line.style_dotted : line.style_solid
-	color appliedColor = lineState == 3 ? brokenColor : (lineRole == 1 ? resistanceColor : supportColor)
-	line.set_style(targetLine, appliedStyle)
-	line.set_color(targetLine, appliedColor)
+    appliedStyle = lineState == 3 ? line.style_dotted : line.style_solid
+    color appliedColor = lineState == 3 ? brokenColor : (lineRole == 1 ? resistanceColor : supportColor)
+    line.set_style(targetLine, appliedStyle)
+    line.set_color(targetLine, appliedColor)
 
 // @function 水平線管理配列から指定インデックスの要素を削除する
 // @param horizontalLines ライン配列
@@ -25,387 +25,276 @@ f_apply_sr_line_style(targetLine, lineState, lineRole, resistanceColor, supportC
 // @param targetIndex 削除対象インデックス
 // @return なし
 f_delete_sr_line_at(horizontalLines, linePrices, lineRoles, lineStates, createdBars, brokenBars, watchArmed, watchFirstBars, watchFirstExtremes, targetIndex) =>
-	line targetLine = array.get(horizontalLines, targetIndex)
-	line.delete(targetLine)
-	array.remove(horizontalLines, targetIndex)
-	array.remove(linePrices, targetIndex)
-	array.remove(lineRoles, targetIndex)
-	array.remove(lineStates, targetIndex)
-	array.remove(createdBars, targetIndex)
-	array.remove(brokenBars, targetIndex)
-	array.remove(watchArmed, targetIndex)
-	array.remove(watchFirstBars, targetIndex)
-	array.remove(watchFirstExtremes, targetIndex)
+    line targetLine = array.get(horizontalLines, targetIndex)
+    line.delete(targetLine)
+    array.remove(horizontalLines, targetIndex)
+    array.remove(linePrices, targetIndex)
+    array.remove(lineRoles, targetIndex)
+    array.remove(lineStates, targetIndex)
+    array.remove(createdBars, targetIndex)
+    array.remove(brokenBars, targetIndex)
+    array.remove(watchArmed, targetIndex)
+    array.remove(watchFirstBars, targetIndex)
+    array.remove(watchFirstExtremes, targetIndex)
 
-// @function 一般的なPivotベースZigZagを描画する
+// @function 高安値追従型ZigZagを描画する
 // @param なし
 // @return なし
 zz_run() =>
-	int PIVOT_TYPE_NONE = 0
-	int PIVOT_TYPE_UP = 1
-	int PIVOT_TYPE_DOWN = -1
-	int SR_ROLE_RESISTANCE = 1
-	int SR_ROLE_SUPPORT = -1
-	int SR_STATE_ACTIVE = 1
-	int SR_STATE_FLIPPED = 2
-	int SR_STATE_BROKEN = 3
-	string SIGNAL_TEXT_PROMOTION = "昇格"
-	string SIGNAL_TEXT_REVERSAL_UP = "上反転"
-	string SIGNAL_TEXT_REVERSAL_DOWN = "下反転"
-	int TABLE_COLUMNS = 2
-	int TABLE_ROWS = 4
-	int TABLE_LAST_COLUMN_INDEX = 1
-	int TABLE_LAST_ROW_INDEX = 3
-	int SIGNAL_TEXT_OPAQUE = 0
-	string FIB_OPTION_23_6 = "23.6%"
-	string FIB_OPTION_38_2 = "38.2%"
-	float MIN_ADAPTIVE_DEVIATION_FLOOR_PCT = 0.1
-	float SIDEWAYS_RELAX_FACTOR_MIN = 0.55
-	float SIDEWAYS_RELAX_FACTOR_MAX = 0.95
-	float SIDEWAYS_ATR_THRESHOLD_MULTIPLIER = 2.2
-	float SIDEWAYS_BASE_THRESHOLD_MULTIPLIER = 0.8
-	float SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER = 0.35
-	int SIGNAL_LABEL_ATR_PERIOD = 14
+    int PIVOT_TYPE_NONE = 0
+    int PIVOT_TYPE_UP = 1
+    int PIVOT_TYPE_DOWN = -1
+    int SR_ROLE_RESISTANCE = 1
+    int SR_ROLE_SUPPORT = -1
+    int SR_STATE_ACTIVE = 1
+    int SR_STATE_FLIPPED = 2
+    int SR_STATE_BROKEN = 3
+    string SIGNAL_TEXT_REVERSAL_UP = "上反転"
+    string SIGNAL_TEXT_REVERSAL_DOWN = "下反転"
+    int TABLE_COLUMNS = 2
+    int TABLE_ROWS = 4
+    int TABLE_LAST_COLUMN_INDEX = 1
+    int TABLE_LAST_ROW_INDEX = 3
+    int SIGNAL_TEXT_OPAQUE = 0
+    float SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER = 0.35
+    int SIGNAL_LABEL_ATR_PERIOD = 14
 
-	// フェーズ0基準値。後続フェーズはこの初期入力と表示挙動を壊さないことを前提に拡張する。
-	int leftBars = input.int(5, "Pivot左バー数", minval=1, tooltip="ピボット確定に必要な左側バー数")
-	int rightBars = input.int(5, "Pivot右バー数", minval=1, tooltip="ピボット確定に必要な右側バー数")
-	float baseDeviationPercent = input.float(1.0, "基準最小変化率(%)", minval=0.1, step=0.1, tooltip="有効なZoneレンジが未形成の間に使う反転しきい値")
-	float discountDeviationPercent = input.float(1.0, "Discount側最小変化率(%)", minval=0.1, step=0.1, tooltip="価格がレンジ下半分(Discount)にある時の反転しきい値")
-	float premiumDeviationPercent = input.float(1.0, "Premium側最小変化率(%)", minval=0.1, step=0.1, tooltip="価格がレンジ上半分(Premium)にある時の反転しきい値")
-	int minBarsBetweenReversals = input.int(3, "最小反転間隔(バー)", minval=1, maxval=20, tooltip="確定反転の連続発生を抑えるための最小バー間隔")
-	color resistanceLineColor = input.color(color.new(#b97f01, 0), "Res_Color", tooltip="レジスタンスライン（有効）の色")
-	color supportLineColor = input.color(color.new(#0d91dd, 0), "Sup_Color", tooltip="サポートライン（有効）の色")
-	color brokenLineColor = input.color(color.new(color.gray, 0), "Broken_Line_Color", tooltip="完全に破壊されたラインの色")
-	int maxHorizontalLinesCount = input.int(50, "Max_Lines_Count", minval=10, maxval=400, tooltip="チャート上に保持する最大水平ライン数")
-	int expiryBarsAfterBreak = input.int(100, "Expiry_Bars_After_Break", minval=1, maxval=2000, tooltip="Broken後に何本でラインを削除するか")
-	bool requireFibPromotion = input.bool(false, "Fib昇格必須で確定", tooltip="ONで反転候補が選択Fib比率に到達した場合のみ確定を許可")
-	string fibPromotionLevel = input.string(FIB_OPTION_23_6, "昇格Fib比率", options=[FIB_OPTION_23_6, FIB_OPTION_38_2], tooltip="昇格判定に使う戻し比率")
-	bool useErAdaptiveFib = input.bool(true, "ER連動で昇格Fib比率を切替", tooltip="ONでERに応じて強い相場23.6%、弱い相場38.2%を自動適用")
-	int erPeriod = input.int(20, "ER期間", minval=2, tooltip="Efficiency Ratioを算出する期間")
-	float erThreshold = input.float(0.45, "ER強弱閾値", minval=0.0, maxval=1.0, step=0.01, tooltip="ERがこの値以上なら強い相場として扱う")
-	bool showHud = input.bool(true, "HUDを表示", tooltip="現在Zone、ER状態、適用Fib比率、最新確定方向を表示")
-	bool showSignals = input.bool(true, "シグナルを表示", tooltip="Fib昇格成立と確定反転の2種類シグナルを表示")
-	int maxSignalLabels = input.int(120, "シグナル保持本数", minval=20, maxval=300, tooltip="古いシグナルラベルは自動削除")
-	int maxLines = input.int(300, "表示ライン本数", minval=50, maxval=500, tooltip="古いZigZagラインは自動削除")
-	bool showRealtimeLeg = input.bool(true, "未確定レッグを表示", tooltip="最後の確定ピボットから現在値への点線を表示")
-	color upColor = input.color(color.new(color.lime, 0), "上昇レッグ色")
-	color downColor = input.color(color.new(color.red, 0), "下降レッグ色")
-	int lineWidth = input.int(4, "ライン幅", minval=1, maxval=4)
-	float manualFibRatio = f_get_fib_ratio_from_label(fibPromotionLevel)
-	float efficiencyRatioValue = f_calc_efficiency_ratio(close, erPeriod)
-	bool hasStrongTrend = efficiencyRatioValue >= erThreshold
-	float adaptiveFibRatio = hasStrongTrend ? ZZ_FIB_RATIO_23_6 : ZZ_FIB_RATIO_38_2
-	float appliedFibRatio = useErAdaptiveFib ? adaptiveFibRatio : manualFibRatio
-	float signalLabelOffsetPrice = ta.atr(SIGNAL_LABEL_ATR_PERIOD) * SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER
-	int sidewaysLookbackBarsAuto = math.max(12, erPeriod + rightBars)
-	int sidewaysAtrPeriodAuto = math.max(5, int(math.round(erPeriod * 0.5)))
-	float sidewaysAtrPercent = close == 0.0 ? 0.0 : (ta.atr(sidewaysAtrPeriodAuto) / close) * 100.0
-	float sidewaysCompressionThresholdPctAuto = math.max(sidewaysAtrPercent * SIDEWAYS_ATR_THRESHOLD_MULTIPLIER, baseDeviationPercent * SIDEWAYS_BASE_THRESHOLD_MULTIPLIER)
-	float sidewaysTrendWeakness = math.max(0.0, erThreshold - efficiencyRatioValue)
-	float sidewaysRelaxFactorAuto = math.max(SIDEWAYS_RELAX_FACTOR_MIN, math.min(SIDEWAYS_RELAX_FACTOR_MAX, 1.0 - sidewaysTrendWeakness * 1.2))
-	float sidewaysRangeHigh = ta.highest(high, sidewaysLookbackBarsAuto)
-	float sidewaysRangeLow = ta.lowest(low, sidewaysLookbackBarsAuto)
-	float sidewaysRangeWidthPct = f_calc_range_width_pct(sidewaysRangeHigh, sidewaysRangeLow, close)
-	bool isSidewaysCompressed = efficiencyRatioValue < erThreshold and f_is_compressed_range(sidewaysRangeWidthPct, sidewaysCompressionThresholdPctAuto)
+    int atrPeriod = input.int(14, "ATR期間", minval=1, tooltip="動的反転閾値の基準となるATR期間")
+    float atrMultiplier = input.float(1.8, "ATR乗数k", minval=0.1, step=0.1, tooltip="反転閾値 = (k×ATR)×(2.0-ER) のk")
+    int erPeriod = input.int(20, "ER期間", minval=2, tooltip="Efficiency Ratioを算出する期間")
+    float erThreshold = input.float(0.45, "ER強弱閾値", minval=0.0, maxval=1.0, step=0.01, tooltip="ERがこの値以上なら1本抜け即時確定")
+    color resistanceLineColor = input.color(color.new(#b97f01, 0), "Res_Color", tooltip="レジスタンスライン（有効）の色")
+    color supportLineColor = input.color(color.new(#0d91dd, 0), "Sup_Color", tooltip="サポートライン（有効）の色")
+    color brokenLineColor = input.color(color.new(color.gray, 0), "Broken_Line_Color", tooltip="完全に破壊されたラインの色")
+    int maxHorizontalLinesCount = input.int(50, "Max_Lines_Count", minval=10, maxval=400, tooltip="チャート上に保持する最大水平ライン数")
+    int expiryBarsAfterBreak = input.int(100, "Expiry_Bars_After_Break", minval=1, maxval=2000, tooltip="Broken後に何本でラインを削除するか")
+    bool showHud = input.bool(true, "HUDを表示", tooltip="ER、確定モード、反転閾値、最新確定方向を表示")
+    bool showSignals = input.bool(true, "シグナルを表示", tooltip="確定反転シグナルを表示")
+    int maxSignalLabels = input.int(120, "シグナル保持本数", minval=20, maxval=300, tooltip="古いシグナルラベルは自動削除")
+    int maxLines = input.int(300, "表示ライン本数", minval=50, maxval=500, tooltip="古いZigZagラインは自動削除")
+    bool showRealtimeLeg = input.bool(true, "未確定レッグを表示", tooltip="最後の確定ピボットから現在の暫定極値への点線を表示")
+    color upColor = input.color(color.new(color.lime, 0), "上昇レッグ色")
+    color downColor = input.color(color.new(color.red, 0), "下降レッグ色")
+    int lineWidth = input.int(4, "ライン幅", minval=1, maxval=4)
 
-	// フェーズ0基準: ta.pivot* による確定候補だけを使う。
-	float pivotHigh = ta.pivothigh(high, leftBars, rightBars)
-	float pivotLow = ta.pivotlow(low, leftBars, rightBars)
-	bool hasPivotHigh = not na(pivotHigh)
-	bool hasPivotLow = not na(pivotLow)
-	int pivotTime = time[rightBars]
+    float atrValue = ta.atr(atrPeriod)
+    float efficiencyRatioValue = f_calc_efficiency_ratio(close, erPeriod)
+    bool hasStrongTrend = efficiencyRatioValue >= erThreshold
+    float thresholdPriceRaw = f_calc_dynamic_threshold_price(atrValue, efficiencyRatioValue, atrMultiplier)
+    float thresholdPrice = math.max(thresholdPriceRaw, syminfo.mintick)
+    float signalLabelOffsetPrice = ta.atr(SIGNAL_LABEL_ATR_PERIOD) * SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER
 
-	// フェーズ1: 確定ピボット状態を管理する。
-	var int confirmedPivotType = PIVOT_TYPE_NONE
-	var float confirmedPivotPrice = na
-	var int confirmedPivotTime = na
-	var int previousConfirmedPivotType = PIVOT_TYPE_NONE
-	var float previousConfirmedPivotPrice = na
-	var int previousConfirmedPivotTime = na
-	var int confirmedPivotBarIndex = na
-	var int previousConfirmedPivotBarIndex = na
+    var int confirmedPivotType = PIVOT_TYPE_NONE
+    var float confirmedPivotPrice = na
+    var int confirmedPivotTime = na
+    var int confirmedPivotBarIndex = na
 
-	// フェーズ1: 仮ピボット候補状態を管理する。
-	var int candidatePivotType = PIVOT_TYPE_NONE
-	var float candidatePivotPrice = na
-	var int candidatePivotTime = na
-	var int candidatePivotBarIndex = na
+    // activeLegDirection=UPは暫定高値を追跡中、DOWNは暫定安値を追跡中を示す。
+    var int activeLegDirection = PIVOT_TYPE_NONE
+    var float legExtremePrice = na
+    var int legExtremeTime = na
+    var int legExtremeBarIndex = na
+    var int weakBreakCount = 0
 
-	// フェーズ1: 描画状態を管理する。
-	var array<line> confirmedLegLines = array.new<line>()
-	var line realtimeLegLine = na
-	var table hudTable = table.new(position.top_right, TABLE_COLUMNS, TABLE_ROWS, border_width=1)
-	var array<label> signalLabels = array.new<label>()
-	var array<line> horizontalLines = array.new<line>()
-	var array<float> horizontalLinePrices = array.new<float>()
-	var array<int> horizontalLineRoles = array.new<int>()
-	var array<int> horizontalLineStates = array.new<int>()
-	var array<int> horizontalLineCreatedBars = array.new<int>()
-	var array<int> horizontalLineBrokenBars = array.new<int>()
-	var array<bool> horizontalWatchArmed = array.new<bool>()
-	var array<int> horizontalWatchFirstBars = array.new<int>()
-	var array<float> horizontalWatchFirstExtremes = array.new<float>()
+    var array<line> confirmedLegLines = array.new<line>()
+    var line realtimeLegLine = na
+    var table hudTable = table.new(position.top_right, TABLE_COLUMNS, TABLE_ROWS, border_width=1)
+    var array<label> signalLabels = array.new<label>()
+    var array<line> horizontalLines = array.new<line>()
+    var array<float> horizontalLinePrices = array.new<float>()
+    var array<int> horizontalLineRoles = array.new<int>()
+    var array<int> horizontalLineStates = array.new<int>()
+    var array<int> horizontalLineCreatedBars = array.new<int>()
+    var array<int> horizontalLineBrokenBars = array.new<int>()
+    var array<bool> horizontalWatchArmed = array.new<bool>()
+    var array<int> horizontalWatchFirstBars = array.new<int>()
+    var array<float> horizontalWatchFirstExtremes = array.new<float>()
 
-	// フェーズ6: Fib昇格シグナルの重複通知を抑制する。
-	var int promotionCandidateType = PIVOT_TYPE_NONE
-	var bool promotionLatched = false
+    bool reversalConfirmSignal = false
+    float reversalConfirmSignalPrice = na
+    int reversalConfirmSignalTime = na
 
-	// フェーズ2: Zone判定に使う直近確定レンジ高安を管理する。
-	var float confirmedRangeHigh = na
-	var float confirmedRangeLow = na
+    if na(confirmedPivotPrice)
+        confirmedPivotPrice := close
+        confirmedPivotTime := time
+        confirmedPivotBarIndex := bar_index
+        if bar_index > 0
+            activeLegDirection := close >= close[1] ? PIVOT_TYPE_UP : PIVOT_TYPE_DOWN
+        else
+            activeLegDirection := PIVOT_TYPE_UP
+        legExtremePrice := activeLegDirection == PIVOT_TYPE_UP ? high : low
+        legExtremeTime := time
+        legExtremeBarIndex := bar_index
+        weakBreakCount := 0
 
-	bool isZoneRangeAvailable = not na(confirmedRangeHigh) and not na(confirmedRangeLow) and confirmedRangeHigh > confirmedRangeLow
-	float zoneMidPrice = isZoneRangeAvailable ? confirmedRangeLow + (confirmedRangeHigh - confirmedRangeLow) * 0.5 : na
-	bool isPriceInPremiumZone = isZoneRangeAvailable and close >= zoneMidPrice
-	float activeDeviationPercent = isZoneRangeAvailable ? (isPriceInPremiumZone ? premiumDeviationPercent : discountDeviationPercent) : baseDeviationPercent
-	float adaptiveDeviationPercent = isSidewaysCompressed ? math.max(activeDeviationPercent * sidewaysRelaxFactorAuto, MIN_ADAPTIVE_DEVIATION_FLOOR_PCT) : activeDeviationPercent
-	bool fibPromotionSignal = false
-	float fibPromotionSignalPrice = na
-	int fibPromotionSignalTime = na
-	int fibPromotionSignalType = PIVOT_TYPE_NONE
-	bool reversalConfirmSignal = false
-	float reversalConfirmSignalPrice = na
-	int reversalConfirmSignalTime = na
-	bool hasUpperCandidate = hasPivotHigh
-	float upperCandidatePrice = pivotHigh
-	int upperCandidateTime = pivotTime
-	int upperCandidateBarIndex = bar_index[rightBars]
+    if activeLegDirection == PIVOT_TYPE_UP
+        if na(legExtremePrice) or high >= legExtremePrice
+            legExtremePrice := high
+            legExtremeTime := time
+            legExtremeBarIndex := bar_index
+            weakBreakCount := 0
 
-	bool hasLowerCandidate = hasPivotLow
-	float lowerCandidatePrice = pivotLow
-	int lowerCandidateTime = pivotTime
-	int lowerCandidateBarIndex = bar_index[rightBars]
+        float downBreakLine = legExtremePrice - thresholdPrice
+        bool breakTriggered = close < downBreakLine
+        bool shouldConfirm = false
+        if hasStrongTrend
+            shouldConfirm := breakTriggered
+        else
+            weakBreakCount := breakTriggered ? weakBreakCount + 1 : 0
+            shouldConfirm := weakBreakCount >= 2
 
-	if hasPivotHigh and hasPivotLow
-		if confirmedPivotType == PIVOT_TYPE_UP
-			hasPivotHigh := false
-		else if confirmedPivotType == PIVOT_TYPE_DOWN
-			hasPivotLow := false
-		else
-			hasPivotLow := false
+        if shouldConfirm and not na(legExtremePrice) and not na(legExtremeTime)
+            color legColor = upColor
+            line newLine = line.new(confirmedPivotTime, confirmedPivotPrice, legExtremeTime, legExtremePrice, xloc=xloc.bar_time, color=legColor, width=lineWidth)
+            array.push(confirmedLegLines, newLine)
+            if array.size(confirmedLegLines) > maxLines
+                line oldLine = array.shift(confirmedLegLines)
+                line.delete(oldLine)
 
-	if hasUpperCandidate
-		candidatePivotType := PIVOT_TYPE_UP
-		candidatePivotPrice := upperCandidatePrice
-		candidatePivotTime := upperCandidateTime
-		candidatePivotBarIndex := upperCandidateBarIndex
-		if na(confirmedPivotPrice)
-			confirmedPivotType := candidatePivotType
-			confirmedPivotPrice := candidatePivotPrice
-			confirmedPivotTime := candidatePivotTime
-			confirmedPivotBarIndex := candidatePivotBarIndex
-			confirmedRangeHigh := candidatePivotPrice
-		else if confirmedPivotType == candidatePivotType
-			bool moreExtreme = candidatePivotPrice > confirmedPivotPrice
-			if moreExtreme
-				// 同方向のより強い高値が出た場合は、直近レッグ終点のみ更新して過剰確定を防ぐ。
-				confirmedPivotPrice := candidatePivotPrice
-				confirmedPivotTime := candidatePivotTime
-				confirmedPivotBarIndex := candidatePivotBarIndex
-				confirmedRangeHigh := candidatePivotPrice
-				if array.size(confirmedLegLines) > 0
-					line prevLine = array.get(confirmedLegLines, array.size(confirmedLegLines) - 1)
-					line.set_xy2(prevLine, candidatePivotTime, candidatePivotPrice)
-		else
-			float changePct = f_calc_change_pct(confirmedPivotPrice, candidatePivotPrice)
-			bool hasEnoughReversalGap = na(confirmedPivotBarIndex) or (candidatePivotBarIndex - confirmedPivotBarIndex >= minBarsBetweenReversals)
-			float baseLegLength = na(previousConfirmedPivotPrice) ? na : math.abs(confirmedPivotPrice - previousConfirmedPivotPrice)
-			float reversalMoveLength = math.abs(candidatePivotPrice - confirmedPivotPrice)
-			bool isFibPromoted = f_check_fib_promotion(baseLegLength, reversalMoveLength, appliedFibRatio)
-			if promotionCandidateType != candidatePivotType
-				promotionCandidateType := candidatePivotType
-				promotionLatched := false
-			if isFibPromoted and not promotionLatched
-				fibPromotionSignal := true
-				fibPromotionSignalPrice := candidatePivotPrice
-				fibPromotionSignalTime := candidatePivotTime
-				fibPromotionSignalType := candidatePivotType
-				promotionLatched := true
-			bool passesFibPromotion = f_can_confirm_by_fib_promotion(baseLegLength, reversalMoveLength, appliedFibRatio, requireFibPromotion)
-			if changePct >= adaptiveDeviationPercent and passesFibPromotion and hasEnoughReversalGap
-				// 反転は最小変化率を満たした時のみ確定し、基準線として保持する。
-				color legColor = candidatePivotType == 1 ? upColor : downColor
-				line newLine = line.new(confirmedPivotTime, confirmedPivotPrice, candidatePivotTime, candidatePivotPrice, xloc=xloc.bar_time, color=legColor, width=lineWidth)
-				array.push(confirmedLegLines, newLine)
-				if array.size(confirmedLegLines) > maxLines
-					line oldLine = array.shift(confirmedLegLines)
-					line.delete(oldLine)
-				previousConfirmedPivotType := confirmedPivotType
-				previousConfirmedPivotPrice := confirmedPivotPrice
-				previousConfirmedPivotTime := confirmedPivotTime
-				previousConfirmedPivotBarIndex := confirmedPivotBarIndex
-				confirmedPivotType := candidatePivotType
-				confirmedPivotPrice := candidatePivotPrice
-				confirmedPivotTime := candidatePivotTime
-				confirmedPivotBarIndex := candidatePivotBarIndex
-				confirmedRangeHigh := candidatePivotPrice
-				reversalConfirmSignal := true
-				reversalConfirmSignalPrice := candidatePivotPrice
-				reversalConfirmSignalTime := candidatePivotTime
-				promotionCandidateType := PIVOT_TYPE_NONE
-				promotionLatched := false
+            confirmedPivotType := PIVOT_TYPE_UP
+            confirmedPivotPrice := legExtremePrice
+            confirmedPivotTime := legExtremeTime
+            confirmedPivotBarIndex := legExtremeBarIndex
+            reversalConfirmSignal := true
+            reversalConfirmSignalPrice := legExtremePrice
+            reversalConfirmSignalTime := legExtremeTime
 
-	if hasLowerCandidate
-		candidatePivotType := PIVOT_TYPE_DOWN
-		candidatePivotPrice := lowerCandidatePrice
-		candidatePivotTime := lowerCandidateTime
-		candidatePivotBarIndex := lowerCandidateBarIndex
-		if na(confirmedPivotPrice)
-			confirmedPivotType := candidatePivotType
-			confirmedPivotPrice := candidatePivotPrice
-			confirmedPivotTime := candidatePivotTime
-			confirmedPivotBarIndex := candidatePivotBarIndex
-			confirmedRangeLow := candidatePivotPrice
-		else if confirmedPivotType == candidatePivotType
-			bool moreExtreme = candidatePivotPrice < confirmedPivotPrice
-			if moreExtreme
-				// 同方向のより強い安値が出た場合は、直近レッグ終点のみ更新して過剰確定を防ぐ。
-				confirmedPivotPrice := candidatePivotPrice
-				confirmedPivotTime := candidatePivotTime
-				confirmedPivotBarIndex := candidatePivotBarIndex
-				confirmedRangeLow := candidatePivotPrice
-				if array.size(confirmedLegLines) > 0
-					line prevLine = array.get(confirmedLegLines, array.size(confirmedLegLines) - 1)
-					line.set_xy2(prevLine, candidatePivotTime, candidatePivotPrice)
-		else
-			float changePct = f_calc_change_pct(confirmedPivotPrice, candidatePivotPrice)
-			bool hasEnoughReversalGap = na(confirmedPivotBarIndex) or (candidatePivotBarIndex - confirmedPivotBarIndex >= minBarsBetweenReversals)
-			float baseLegLength = na(previousConfirmedPivotPrice) ? na : math.abs(confirmedPivotPrice - previousConfirmedPivotPrice)
-			float reversalMoveLength = math.abs(candidatePivotPrice - confirmedPivotPrice)
-			bool isFibPromoted = f_check_fib_promotion(baseLegLength, reversalMoveLength, appliedFibRatio)
-			if promotionCandidateType != candidatePivotType
-				promotionCandidateType := candidatePivotType
-				promotionLatched := false
-			if isFibPromoted and not promotionLatched
-				fibPromotionSignal := true
-				fibPromotionSignalPrice := candidatePivotPrice
-				fibPromotionSignalTime := candidatePivotTime
-				fibPromotionSignalType := candidatePivotType
-				promotionLatched := true
-			bool passesFibPromotion = f_can_confirm_by_fib_promotion(baseLegLength, reversalMoveLength, appliedFibRatio, requireFibPromotion)
-			if changePct >= adaptiveDeviationPercent and passesFibPromotion and hasEnoughReversalGap
-				// 反転は最小変化率を満たした時のみ確定し、基準線として保持する。
-				color legColor = candidatePivotType == 1 ? upColor : downColor
-				line newLine = line.new(confirmedPivotTime, confirmedPivotPrice, candidatePivotTime, candidatePivotPrice, xloc=xloc.bar_time, color=legColor, width=lineWidth)
-				array.push(confirmedLegLines, newLine)
-				if array.size(confirmedLegLines) > maxLines
-					line oldLine = array.shift(confirmedLegLines)
-					line.delete(oldLine)
-				previousConfirmedPivotType := confirmedPivotType
-				previousConfirmedPivotPrice := confirmedPivotPrice
-				previousConfirmedPivotTime := confirmedPivotTime
-				previousConfirmedPivotBarIndex := confirmedPivotBarIndex
-				confirmedPivotType := candidatePivotType
-				confirmedPivotPrice := candidatePivotPrice
-				confirmedPivotTime := candidatePivotTime
-				confirmedPivotBarIndex := candidatePivotBarIndex
-				confirmedRangeLow := candidatePivotPrice
-				reversalConfirmSignal := true
-				reversalConfirmSignalPrice := candidatePivotPrice
-				reversalConfirmSignalTime := candidatePivotTime
-				promotionCandidateType := PIVOT_TYPE_NONE
-				promotionLatched := false
+            activeLegDirection := PIVOT_TYPE_DOWN
+            legExtremePrice := low
+            legExtremeTime := time
+            legExtremeBarIndex := bar_index
+            weakBreakCount := 0
 
-	if showSignals
-		if fibPromotionSignal and not na(fibPromotionSignalPrice)
-			float promotionLabelPrice = fibPromotionSignalType == PIVOT_TYPE_UP ? fibPromotionSignalPrice + signalLabelOffsetPrice : fibPromotionSignalPrice - signalLabelOffsetPrice
-			label promotionLabel = label.new(fibPromotionSignalTime, promotionLabelPrice, SIGNAL_TEXT_PROMOTION, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.black, color=color.new(color.yellow, SIGNAL_TEXT_OPAQUE), size=size.tiny)
-			f_append_signal_label_with_cap(signalLabels, promotionLabel, maxSignalLabels)
+    else if activeLegDirection == PIVOT_TYPE_DOWN
+        if na(legExtremePrice) or low <= legExtremePrice
+            legExtremePrice := low
+            legExtremeTime := time
+            legExtremeBarIndex := bar_index
+            weakBreakCount := 0
 
-		if reversalConfirmSignal and not na(reversalConfirmSignalPrice)
-			string reversalText = confirmedPivotType == PIVOT_TYPE_UP ? SIGNAL_TEXT_REVERSAL_UP : SIGNAL_TEXT_REVERSAL_DOWN
-			float reversalLabelPrice = confirmedPivotType == PIVOT_TYPE_UP ? reversalConfirmSignalPrice + signalLabelOffsetPrice : reversalConfirmSignalPrice - signalLabelOffsetPrice
-			color reversalColor = confirmedPivotType == PIVOT_TYPE_UP ? upColor : downColor
-			label reversalLabel = label.new(reversalConfirmSignalTime, reversalLabelPrice, reversalText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.white, color=color.new(reversalColor, 0), size=size.tiny)
-			f_append_signal_label_with_cap(signalLabels, reversalLabel, maxSignalLabels)
+        float upBreakLine = legExtremePrice + thresholdPrice
+        bool breakTriggered = close > upBreakLine
+        bool shouldConfirm = false
+        if hasStrongTrend
+            shouldConfirm := breakTriggered
+        else
+            weakBreakCount := breakTriggered ? weakBreakCount + 1 : 0
+            shouldConfirm := weakBreakCount >= 2
 
-	if reversalConfirmSignal and not na(confirmedPivotPrice) and not na(confirmedPivotTime)
-		int initialLineRole = confirmedPivotType == PIVOT_TYPE_UP ? SR_ROLE_RESISTANCE : SR_ROLE_SUPPORT
-		line createdHorizontalLine = line.new(confirmedPivotTime, confirmedPivotPrice, time, confirmedPivotPrice, xloc=xloc.bar_time, extend=extend.right, color=resistanceLineColor, style=line.style_solid, width=1)
-		f_apply_sr_line_style(createdHorizontalLine, SR_STATE_ACTIVE, initialLineRole, resistanceLineColor, supportLineColor, brokenLineColor)
-		array.push(horizontalLines, createdHorizontalLine)
-		array.push(horizontalLinePrices, confirmedPivotPrice)
-		array.push(horizontalLineRoles, initialLineRole)
-		array.push(horizontalLineStates, SR_STATE_ACTIVE)
-		array.push(horizontalLineCreatedBars, bar_index)
-		array.push(horizontalLineBrokenBars, na)
-		array.push(horizontalWatchArmed, false)
-		array.push(horizontalWatchFirstBars, na)
-		array.push(horizontalWatchFirstExtremes, na)
+        if shouldConfirm and not na(legExtremePrice) and not na(legExtremeTime)
+            color legColor = downColor
+            line newLine = line.new(confirmedPivotTime, confirmedPivotPrice, legExtremeTime, legExtremePrice, xloc=xloc.bar_time, color=legColor, width=lineWidth)
+            array.push(confirmedLegLines, newLine)
+            if array.size(confirmedLegLines) > maxLines
+                line oldLine = array.shift(confirmedLegLines)
+                line.delete(oldLine)
 
-		if array.size(horizontalLines) > maxHorizontalLinesCount
-			f_delete_sr_line_at(horizontalLines, horizontalLinePrices, horizontalLineRoles, horizontalLineStates, horizontalLineCreatedBars, horizontalLineBrokenBars, horizontalWatchArmed, horizontalWatchFirstBars, horizontalWatchFirstExtremes, 0)
+            confirmedPivotType := PIVOT_TYPE_DOWN
+            confirmedPivotPrice := legExtremePrice
+            confirmedPivotTime := legExtremeTime
+            confirmedPivotBarIndex := legExtremeBarIndex
+            reversalConfirmSignal := true
+            reversalConfirmSignalPrice := legExtremePrice
+            reversalConfirmSignalTime := legExtremeTime
 
-	int horizontalIndex = array.size(horizontalLines) - 1
-	while horizontalIndex >= 0
-		int currentState = array.get(horizontalLineStates, horizontalIndex)
-		int currentRole = array.get(horizontalLineRoles, horizontalIndex)
-		float currentPrice = array.get(horizontalLinePrices, horizontalIndex)
-		bool watchActive = array.get(horizontalWatchArmed, horizontalIndex)
-		int watchStartBar = array.get(horizontalWatchFirstBars, horizontalIndex)
-		float watchFirstExtreme = array.get(horizontalWatchFirstExtremes, horizontalIndex)
-		bool isDeleted = false
+            activeLegDirection := PIVOT_TYPE_UP
+            legExtremePrice := high
+            legExtremeTime := time
+            legExtremeBarIndex := bar_index
+            weakBreakCount := 0
 
-		if currentState == SR_STATE_BROKEN
-			int brokenBarIndex = array.get(horizontalLineBrokenBars, horizontalIndex)
-			bool hasExpiry = not na(brokenBarIndex) and bar_index - brokenBarIndex >= expiryBarsAfterBreak
-			if hasExpiry
-				f_delete_sr_line_at(horizontalLines, horizontalLinePrices, horizontalLineRoles, horizontalLineStates, horizontalLineCreatedBars, horizontalLineBrokenBars, horizontalWatchArmed, horizontalWatchFirstBars, horizontalWatchFirstExtremes, horizontalIndex)
-				isDeleted := true
+    if showSignals and reversalConfirmSignal and not na(reversalConfirmSignalPrice)
+        string reversalText = confirmedPivotType == PIVOT_TYPE_UP ? SIGNAL_TEXT_REVERSAL_UP : SIGNAL_TEXT_REVERSAL_DOWN
+        float reversalLabelPrice = confirmedPivotType == PIVOT_TYPE_UP ? reversalConfirmSignalPrice + signalLabelOffsetPrice : reversalConfirmSignalPrice - signalLabelOffsetPrice
+        color reversalColor = confirmedPivotType == PIVOT_TYPE_UP ? upColor : downColor
+        label reversalLabel = label.new(reversalConfirmSignalTime, reversalLabelPrice, reversalText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.white, color=color.new(reversalColor, SIGNAL_TEXT_OPAQUE), size=size.tiny)
+        f_append_signal_label_with_cap(signalLabels, reversalLabel, maxSignalLabels)
 
-		if not isDeleted and currentState != SR_STATE_BROKEN
-			if not watchActive
-				bool firstBreakDetected = (currentRole == SR_ROLE_RESISTANCE and close > currentPrice) or (currentRole == SR_ROLE_SUPPORT and close < currentPrice)
-				if firstBreakDetected
-					float storedExtreme = currentRole == SR_ROLE_RESISTANCE ? high : low
-					array.set(horizontalWatchArmed, horizontalIndex, true)
-					array.set(horizontalWatchFirstBars, horizontalIndex, bar_index)
-					array.set(horizontalWatchFirstExtremes, horizontalIndex, storedExtreme)
-			else
-				bool isNextBar = not na(watchStartBar) and bar_index == watchStartBar + 1
-				bool isTimingMiss = na(watchStartBar) or bar_index > watchStartBar + 1
-				bool breakConfirmed = false
+    if reversalConfirmSignal and not na(confirmedPivotPrice) and not na(confirmedPivotTime)
+        int initialLineRole = confirmedPivotType == PIVOT_TYPE_UP ? SR_ROLE_RESISTANCE : SR_ROLE_SUPPORT
+        line createdHorizontalLine = line.new(confirmedPivotTime, confirmedPivotPrice, time, confirmedPivotPrice, xloc=xloc.bar_time, extend=extend.right, color=resistanceLineColor, style=line.style_solid, width=1)
+        f_apply_sr_line_style(createdHorizontalLine, SR_STATE_ACTIVE, initialLineRole, resistanceLineColor, supportLineColor, brokenLineColor)
+        array.push(horizontalLines, createdHorizontalLine)
+        array.push(horizontalLinePrices, confirmedPivotPrice)
+        array.push(horizontalLineRoles, initialLineRole)
+        array.push(horizontalLineStates, SR_STATE_ACTIVE)
+        array.push(horizontalLineCreatedBars, bar_index)
+        array.push(horizontalLineBrokenBars, na)
+        array.push(horizontalWatchArmed, false)
+        array.push(horizontalWatchFirstBars, na)
+        array.push(horizontalWatchFirstExtremes, na)
 
-				if isNextBar
-					if currentRole == SR_ROLE_RESISTANCE
-						breakConfirmed := close > watchFirstExtreme
-					else
-						breakConfirmed := close < watchFirstExtreme
+        if array.size(horizontalLines) > maxHorizontalLinesCount
+            f_delete_sr_line_at(horizontalLines, horizontalLinePrices, horizontalLineRoles, horizontalLineStates, horizontalLineCreatedBars, horizontalLineBrokenBars, horizontalWatchArmed, horizontalWatchFirstBars, horizontalWatchFirstExtremes, 0)
 
-				if breakConfirmed
-					int transitionedState = currentState
-					int transitionedRole = currentRole
-					if currentState == SR_STATE_ACTIVE
-						transitionedState := SR_STATE_FLIPPED
-						transitionedRole := currentRole == SR_ROLE_RESISTANCE ? SR_ROLE_SUPPORT : SR_ROLE_RESISTANCE
-					else
-						transitionedState := SR_STATE_BROKEN
-					array.set(horizontalLineStates, horizontalIndex, transitionedState)
-					array.set(horizontalLineRoles, horizontalIndex, transitionedRole)
-					if transitionedState == SR_STATE_BROKEN
-						array.set(horizontalLineBrokenBars, horizontalIndex, bar_index)
-					line targetLine = array.get(horizontalLines, horizontalIndex)
-					f_apply_sr_line_style(targetLine, transitionedState, transitionedRole, resistanceLineColor, supportLineColor, brokenLineColor)
+    int horizontalIndex = array.size(horizontalLines) - 1
+    while horizontalIndex >= 0
+        int currentState = array.get(horizontalLineStates, horizontalIndex)
+        int currentRole = array.get(horizontalLineRoles, horizontalIndex)
+        float currentPrice = array.get(horizontalLinePrices, horizontalIndex)
+        bool watchActive = array.get(horizontalWatchArmed, horizontalIndex)
+        int watchStartBar = array.get(horizontalWatchFirstBars, horizontalIndex)
+        float watchFirstExtreme = array.get(horizontalWatchFirstExtremes, horizontalIndex)
+        bool isDeleted = false
 
-				bool shouldResetWatch = breakConfirmed or isNextBar or isTimingMiss
-				if shouldResetWatch
-					array.set(horizontalWatchArmed, horizontalIndex, false)
-					array.set(horizontalWatchFirstBars, horizontalIndex, na)
-					array.set(horizontalWatchFirstExtremes, horizontalIndex, na)
+        if currentState == SR_STATE_BROKEN
+            int brokenBarIndex = array.get(horizontalLineBrokenBars, horizontalIndex)
+            bool hasExpiry = not na(brokenBarIndex) and bar_index - brokenBarIndex >= expiryBarsAfterBreak
+            if hasExpiry
+                f_delete_sr_line_at(horizontalLines, horizontalLinePrices, horizontalLineRoles, horizontalLineStates, horizontalLineCreatedBars, horizontalLineBrokenBars, horizontalWatchArmed, horizontalWatchFirstBars, horizontalWatchFirstExtremes, horizontalIndex)
+                isDeleted := true
 
-		horizontalIndex := horizontalIndex - 1
+        if not isDeleted and currentState != SR_STATE_BROKEN
+            if not watchActive
+                bool firstBreakDetected = (currentRole == SR_ROLE_RESISTANCE and close > currentPrice) or (currentRole == SR_ROLE_SUPPORT and close < currentPrice)
+                if firstBreakDetected
+                    float storedExtreme = currentRole == SR_ROLE_RESISTANCE ? high : low
+                    array.set(horizontalWatchArmed, horizontalIndex, true)
+                    array.set(horizontalWatchFirstBars, horizontalIndex, bar_index)
+                    array.set(horizontalWatchFirstExtremes, horizontalIndex, storedExtreme)
+            else
+                bool isNextBar = not na(watchStartBar) and bar_index == watchStartBar + 1
+                bool isTimingMiss = na(watchStartBar) or bar_index > watchStartBar + 1
+                bool breakConfirmed = false
 
-	if showHud
-		f_render_hud_minimal(hudTable, isZoneRangeAvailable, isPriceInPremiumZone, useErAdaptiveFib, hasStrongTrend, efficiencyRatioValue, appliedFibRatio, confirmedPivotType)
-	else
-		table.clear(hudTable, 0, 0, TABLE_LAST_COLUMN_INDEX, TABLE_LAST_ROW_INDEX)
+                if isNextBar
+                    if currentRole == SR_ROLE_RESISTANCE
+                        breakConfirmed := close > watchFirstExtreme
+                    else
+                        breakConfirmed := close < watchFirstExtreme
 
-	if not na(realtimeLegLine)
-		line.delete(realtimeLegLine)
-		realtimeLegLine := na
+                if breakConfirmed
+                    int transitionedState = currentState
+                    int transitionedRole = currentRole
+                    if currentState == SR_STATE_ACTIVE
+                        transitionedState := SR_STATE_FLIPPED
+                        transitionedRole := currentRole == SR_ROLE_RESISTANCE ? SR_ROLE_SUPPORT : SR_ROLE_RESISTANCE
+                    else
+                        transitionedState := SR_STATE_BROKEN
+                    array.set(horizontalLineStates, horizontalIndex, transitionedState)
+                    array.set(horizontalLineRoles, horizontalIndex, transitionedRole)
+                    if transitionedState == SR_STATE_BROKEN
+                        array.set(horizontalLineBrokenBars, horizontalIndex, bar_index)
+                    line targetLine = array.get(horizontalLines, horizontalIndex)
+                    f_apply_sr_line_style(targetLine, transitionedState, transitionedRole, resistanceLineColor, supportLineColor, brokenLineColor)
 
-	if showRealtimeLeg and not na(confirmedPivotPrice)
-		// フェーズ0基準: 未確定レッグは必ず1本だけ表示する。
-		color liveColor = confirmedPivotType == PIVOT_TYPE_UP ? downColor : upColor
-		realtimeLegLine := line.new(confirmedPivotTime, confirmedPivotPrice, time, close, xloc=xloc.bar_time, color=color.new(liveColor, 0), style=line.style_dotted, width=lineWidth)
+                bool shouldResetWatch = breakConfirmed or isNextBar or isTimingMiss
+                if shouldResetWatch
+                    array.set(horizontalWatchArmed, horizontalIndex, false)
+                    array.set(horizontalWatchFirstBars, horizontalIndex, na)
+                    array.set(horizontalWatchFirstExtremes, horizontalIndex, na)
+
+        horizontalIndex := horizontalIndex - 1
+
+    if showHud
+        f_render_hud_minimal(hudTable, hasStrongTrend, efficiencyRatioValue, thresholdPrice, confirmedPivotType)
+    else
+        table.clear(hudTable, 0, 0, TABLE_LAST_COLUMN_INDEX, TABLE_LAST_ROW_INDEX)
+
+    if not na(realtimeLegLine)
+        line.delete(realtimeLegLine)
+        realtimeLegLine := na
+
+    if showRealtimeLeg and not na(confirmedPivotPrice) and not na(legExtremePrice)
+        color liveColor = activeLegDirection == PIVOT_TYPE_UP ? upColor : downColor
+        realtimeLegLine := line.new(confirmedPivotTime, confirmedPivotPrice, legExtremeTime, legExtremePrice, xloc=xloc.bar_time, color=color.new(liveColor, 0), style=line.style_dotted, width=lineWidth)
