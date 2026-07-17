@@ -56,6 +56,8 @@ zz_run() =>
     int SIGNAL_LABEL_BG_ALPHA = 86
     float SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER = 0.35
     int SIGNAL_LABEL_ATR_PERIOD = 14
+    string SR_CONFIRM_MODE_FIRST_EXTREME = "足1極値更新"
+    string SR_CONFIRM_MODE_LINE_PRICE = "ライン価格維持"
     color HIGH_SIDE_LABEL_COLOR = #20a35a
     color LOW_SIDE_LABEL_COLOR = #d45555
 
@@ -73,6 +75,8 @@ zz_run() =>
     int maxSignalLabels = input.int(120, "シグナル保持本数", minval=20, maxval=300, tooltip="古いシグナルラベルは自動削除")
     int maxLines = input.int(300, "表示ライン本数", minval=50, maxval=500, tooltip="古いZigZagラインは自動削除")
     bool showRealtimeLeg = input.bool(true, "未確定レッグを表示", tooltip="最後の確定ピボットから現在の暫定極値への点線を表示")
+    bool useBodyForPivotDetection = input.bool(false, "ZigZag判定を実体ベースにする", tooltip="ONでopen/close、OFFでhigh/lowを使って極値判定します")
+    string srSecondBreakConfirmMode = input.string(SR_CONFIRM_MODE_LINE_PRICE, "レジサポ2本目確定条件", options=[SR_CONFIRM_MODE_LINE_PRICE, SR_CONFIRM_MODE_FIRST_EXTREME], tooltip="ライン価格維持: 足2終値がライン外側を維持で確定 / 足1極値更新: 足2終値が足1高安を更新で確定")
     color upColor = input.color(color.new(color.lime, 0), "上昇レッグ色")
     color downColor = input.color(color.new(color.red, 0), "下降レッグ色")
     int lineWidth = input.int(4, "ライン幅", minval=1, maxval=4)
@@ -83,6 +87,8 @@ zz_run() =>
     float thresholdPriceRaw = f_calc_dynamic_threshold_price(atrValue, efficiencyRatioValue, atrMultiplier)
     float thresholdPrice = math.max(thresholdPriceRaw, syminfo.mintick)
     float signalLabelOffsetPrice = ta.atr(SIGNAL_LABEL_ATR_PERIOD) * SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER
+    float pivotSourceHigh = useBodyForPivotDetection ? math.max(open, close) : high
+    float pivotSourceLow = useBodyForPivotDetection ? math.min(open, close) : low
 
     var int confirmedPivotType = PIVOT_TYPE_NONE
     var float confirmedPivotPrice = na
@@ -126,14 +132,14 @@ zz_run() =>
             activeLegDirection := close >= close[1] ? PIVOT_TYPE_UP : PIVOT_TYPE_DOWN
         else
             activeLegDirection := PIVOT_TYPE_UP
-        legExtremePrice := activeLegDirection == PIVOT_TYPE_UP ? high : low
+        legExtremePrice := activeLegDirection == PIVOT_TYPE_UP ? pivotSourceHigh : pivotSourceLow
         legExtremeTime := time
         legExtremeBarIndex := bar_index
         weakBreakCount := 0
 
     if activeLegDirection == PIVOT_TYPE_UP
-        if na(legExtremePrice) or high >= legExtremePrice
-            legExtremePrice := high
+        if na(legExtremePrice) or pivotSourceHigh >= legExtremePrice
+            legExtremePrice := pivotSourceHigh
             legExtremeTime := time
             legExtremeBarIndex := bar_index
             weakBreakCount := 0
@@ -168,14 +174,14 @@ zz_run() =>
             reversalConfirmSignalTime := legExtremeTime
 
             activeLegDirection := PIVOT_TYPE_DOWN
-            legExtremePrice := low
+            legExtremePrice := pivotSourceLow
             legExtremeTime := time
             legExtremeBarIndex := bar_index
             weakBreakCount := 0
 
     else if activeLegDirection == PIVOT_TYPE_DOWN
-        if na(legExtremePrice) or low <= legExtremePrice
-            legExtremePrice := low
+        if na(legExtremePrice) or pivotSourceLow <= legExtremePrice
+            legExtremePrice := pivotSourceLow
             legExtremeTime := time
             legExtremeBarIndex := bar_index
             weakBreakCount := 0
@@ -210,7 +216,7 @@ zz_run() =>
             reversalConfirmSignalTime := legExtremeTime
 
             activeLegDirection := PIVOT_TYPE_UP
-            legExtremePrice := high
+            legExtremePrice := pivotSourceHigh
             legExtremeTime := time
             legExtremeBarIndex := bar_index
             weakBreakCount := 0
@@ -258,7 +264,7 @@ zz_run() =>
             if not watchActive
                 bool firstBreakDetected = (currentRole == SR_ROLE_RESISTANCE and close > currentPrice) or (currentRole == SR_ROLE_SUPPORT and close < currentPrice)
                 if firstBreakDetected
-                    float storedExtreme = currentRole == SR_ROLE_RESISTANCE ? high : low
+                    float storedExtreme = currentRole == SR_ROLE_RESISTANCE ? pivotSourceHigh : pivotSourceLow
                     array.set(horizontalWatchArmed, horizontalIndex, true)
                     array.set(horizontalWatchFirstBars, horizontalIndex, bar_index)
                     array.set(horizontalWatchFirstExtremes, horizontalIndex, storedExtreme)
@@ -268,10 +274,15 @@ zz_run() =>
                 bool breakConfirmed = false
 
                 if isNextBar
+                    bool confirmByFirstExtreme = false
+                    bool confirmByLinePrice = false
                     if currentRole == SR_ROLE_RESISTANCE
-                        breakConfirmed := close > watchFirstExtreme
+                        confirmByFirstExtreme := close > watchFirstExtreme
+                        confirmByLinePrice := close > currentPrice
                     else
-                        breakConfirmed := close < watchFirstExtreme
+                        confirmByFirstExtreme := close < watchFirstExtreme
+                        confirmByLinePrice := close < currentPrice
+                    breakConfirmed := srSecondBreakConfirmMode == SR_CONFIRM_MODE_FIRST_EXTREME ? confirmByFirstExtreme : confirmByLinePrice
 
                 if breakConfirmed
                     int transitionedState = currentState
@@ -286,6 +297,8 @@ zz_run() =>
                     if transitionedState == SR_STATE_BROKEN
                         array.set(horizontalLineBrokenBars, horizontalIndex, bar_index)
                     line targetLine = array.get(horizontalLines, horizontalIndex)
+                    line.set_extend(targetLine, extend.none)
+                    line.set_x2(targetLine, time)
                     f_apply_sr_line_style(targetLine, transitionedState, transitionedRole, resistanceLineColor, supportLineColor, brokenLineColor)
 
                 bool shouldResetWatch = breakConfirmed or isNextBar or isTimingMiss
