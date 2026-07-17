@@ -5,9 +5,9 @@ zz_run() =>
 	int PIVOT_TYPE_NONE = 0
 	int PIVOT_TYPE_UP = 1
 	int PIVOT_TYPE_DOWN = -1
-	string SIGNAL_TEXT_PROMO = "PROMO"
-	string SIGNAL_TEXT_REV_UP = "REV↑"
-	string SIGNAL_TEXT_REV_DOWN = "REV↓"
+	string SIGNAL_TEXT_PROMOTION = "昇格"
+	string SIGNAL_TEXT_REVERSAL_UP = "上反転"
+	string SIGNAL_TEXT_REVERSAL_DOWN = "下反転"
 	int TABLE_COLUMNS = 2
 	int TABLE_ROWS = 4
 	int TABLE_LAST_COLUMN_INDEX = 1
@@ -20,6 +20,8 @@ zz_run() =>
 	float SIDEWAYS_RELAX_FACTOR_MAX = 0.95
 	float SIDEWAYS_ATR_THRESHOLD_MULTIPLIER = 2.2
 	float SIDEWAYS_BASE_THRESHOLD_MULTIPLIER = 0.8
+	float SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER = 0.35
+	int SIGNAL_LABEL_ATR_PERIOD = 14
 
 	// フェーズ0基準値。後続フェーズはこの初期入力と表示挙動を壊さないことを前提に拡張する。
 	int leftBars = input.int(5, "Pivot左バー数", minval=1, tooltip="ピボット確定に必要な左側バー数")
@@ -28,7 +30,6 @@ zz_run() =>
 	float discountDeviationPercent = input.float(1.0, "Discount側最小変化率(%)", minval=0.1, step=0.1, tooltip="価格がレンジ下半分(Discount)にある時の反転しきい値")
 	float premiumDeviationPercent = input.float(1.0, "Premium側最小変化率(%)", minval=0.1, step=0.1, tooltip="価格がレンジ上半分(Premium)にある時の反転しきい値")
 	int minBarsBetweenReversals = input.int(3, "最小反転間隔(バー)", minval=1, maxval=20, tooltip="確定反転の連続発生を抑えるための最小バー間隔")
-	bool useWickProvisionalPivot = input.bool(true, "髭で仮ピボット即時候補", tooltip="ONで反対方向の候補をバー高値/安値で即時認定し、確定は既存しきい値で判定")
 	bool requireFibPromotion = input.bool(false, "Fib昇格必須で確定", tooltip="ONで反転候補が選択Fib比率に到達した場合のみ確定を許可")
 	string fibPromotionLevel = input.string(FIB_OPTION_23_6, "昇格Fib比率", options=[FIB_OPTION_23_6, FIB_OPTION_38_2], tooltip="昇格判定に使う戻し比率")
 	bool useErAdaptiveFib = input.bool(true, "ER連動で昇格Fib比率を切替", tooltip="ONでERに応じて強い相場23.6%、弱い相場38.2%を自動適用")
@@ -47,6 +48,7 @@ zz_run() =>
 	bool hasStrongTrend = efficiencyRatioValue >= erThreshold
 	float adaptiveFibRatio = hasStrongTrend ? ZZ_FIB_RATIO_23_6 : ZZ_FIB_RATIO_38_2
 	float appliedFibRatio = useErAdaptiveFib ? adaptiveFibRatio : manualFibRatio
+	float signalLabelOffsetPrice = ta.atr(SIGNAL_LABEL_ATR_PERIOD) * SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER
 	int sidewaysLookbackBarsAuto = math.max(12, erPeriod + rightBars)
 	int sidewaysAtrPeriodAuto = math.max(5, int(math.round(erPeriod * 0.5)))
 	float sidewaysAtrPercent = close == 0.0 ? 0.0 : (ta.atr(sidewaysAtrPeriodAuto) / close) * 100.0
@@ -100,23 +102,22 @@ zz_run() =>
 	bool isPriceInPremiumZone = isZoneRangeAvailable and close >= zoneMidPrice
 	float activeDeviationPercent = isZoneRangeAvailable ? (isPriceInPremiumZone ? premiumDeviationPercent : discountDeviationPercent) : baseDeviationPercent
 	float adaptiveDeviationPercent = isSidewaysCompressed ? math.max(activeDeviationPercent * sidewaysRelaxFactorAuto, MIN_ADAPTIVE_DEVIATION_FLOOR_PCT) : activeDeviationPercent
-	int barStartConfirmedType = confirmedPivotType
 	bool fibPromotionSignal = false
 	float fibPromotionSignalPrice = na
 	int fibPromotionSignalTime = na
+	int fibPromotionSignalType = PIVOT_TYPE_NONE
 	bool reversalConfirmSignal = false
 	float reversalConfirmSignalPrice = na
 	int reversalConfirmSignalTime = na
+	bool hasUpperCandidate = hasPivotHigh
+	float upperCandidatePrice = pivotHigh
+	int upperCandidateTime = pivotTime
+	int upperCandidateBarIndex = bar_index[rightBars]
 
-	bool hasUpperCandidate = hasPivotHigh or (useWickProvisionalPivot and barStartConfirmedType == PIVOT_TYPE_DOWN and not na(confirmedPivotPrice))
-	float upperCandidatePrice = hasPivotHigh ? pivotHigh : high
-	int upperCandidateTime = hasPivotHigh ? pivotTime : time
-	int upperCandidateBarIndex = hasPivotHigh ? bar_index[rightBars] : bar_index
-
-	bool hasLowerCandidate = hasPivotLow or (useWickProvisionalPivot and barStartConfirmedType == PIVOT_TYPE_UP and not na(confirmedPivotPrice))
-	float lowerCandidatePrice = hasPivotLow ? pivotLow : low
-	int lowerCandidateTime = hasPivotLow ? pivotTime : time
-	int lowerCandidateBarIndex = hasPivotLow ? bar_index[rightBars] : bar_index
+	bool hasLowerCandidate = hasPivotLow
+	float lowerCandidatePrice = pivotLow
+	int lowerCandidateTime = pivotTime
+	int lowerCandidateBarIndex = bar_index[rightBars]
 
 	if hasPivotHigh and hasPivotLow
 		if confirmedPivotType == PIVOT_TYPE_UP
@@ -161,6 +162,7 @@ zz_run() =>
 				fibPromotionSignal := true
 				fibPromotionSignalPrice := candidatePivotPrice
 				fibPromotionSignalTime := candidatePivotTime
+				fibPromotionSignalType := candidatePivotType
 				promotionLatched := true
 			bool passesFibPromotion = f_can_confirm_by_fib_promotion(baseLegLength, reversalMoveLength, appliedFibRatio, requireFibPromotion)
 			if changePct >= adaptiveDeviationPercent and passesFibPromotion and hasEnoughReversalGap
@@ -221,6 +223,7 @@ zz_run() =>
 				fibPromotionSignal := true
 				fibPromotionSignalPrice := candidatePivotPrice
 				fibPromotionSignalTime := candidatePivotTime
+				fibPromotionSignalType := candidatePivotType
 				promotionLatched := true
 			bool passesFibPromotion = f_can_confirm_by_fib_promotion(baseLegLength, reversalMoveLength, appliedFibRatio, requireFibPromotion)
 			if changePct >= adaptiveDeviationPercent and passesFibPromotion and hasEnoughReversalGap
@@ -248,14 +251,15 @@ zz_run() =>
 
 	if showSignals
 		if fibPromotionSignal and not na(fibPromotionSignalPrice)
-			label promotionLabel = label.new(fibPromotionSignalTime, fibPromotionSignalPrice, SIGNAL_TEXT_PROMO, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.black, color=color.new(color.yellow, SIGNAL_TEXT_OPAQUE), size=size.tiny)
+			float promotionLabelPrice = fibPromotionSignalType == PIVOT_TYPE_UP ? fibPromotionSignalPrice + signalLabelOffsetPrice : fibPromotionSignalPrice - signalLabelOffsetPrice
+			label promotionLabel = label.new(fibPromotionSignalTime, promotionLabelPrice, SIGNAL_TEXT_PROMOTION, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.black, color=color.new(color.yellow, SIGNAL_TEXT_OPAQUE), size=size.tiny)
 			f_append_signal_label_with_cap(signalLabels, promotionLabel, maxSignalLabels)
 
 		if reversalConfirmSignal and not na(reversalConfirmSignalPrice)
-			string reversalText = confirmedPivotType == PIVOT_TYPE_UP ? SIGNAL_TEXT_REV_UP : SIGNAL_TEXT_REV_DOWN
-			reversalStyle = confirmedPivotType == PIVOT_TYPE_UP ? label.style_label_up : label.style_label_down
+			string reversalText = confirmedPivotType == PIVOT_TYPE_UP ? SIGNAL_TEXT_REVERSAL_UP : SIGNAL_TEXT_REVERSAL_DOWN
+			float reversalLabelPrice = confirmedPivotType == PIVOT_TYPE_UP ? reversalConfirmSignalPrice + signalLabelOffsetPrice : reversalConfirmSignalPrice - signalLabelOffsetPrice
 			color reversalColor = confirmedPivotType == PIVOT_TYPE_UP ? upColor : downColor
-			label reversalLabel = label.new(reversalConfirmSignalTime, reversalConfirmSignalPrice, reversalText, xloc=xloc.bar_time, style=reversalStyle, textcolor=color.white, color=color.new(reversalColor, 0), size=size.tiny)
+			label reversalLabel = label.new(reversalConfirmSignalTime, reversalLabelPrice, reversalText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.white, color=color.new(reversalColor, 0), size=size.tiny)
 			f_append_signal_label_with_cap(signalLabels, reversalLabel, maxSignalLabels)
 
 	if showHud

@@ -60,7 +60,7 @@ def print_manual_checklist() -> None:
     print("\n[MANUAL CHECKLIST] TradingView確認項目")
     print("1. 確定レッグと未確定点線が表示される")
     print("2. HUD ON/OFF と シグナル ON/OFF が期待どおり動作する")
-    print("3. PROMO と REV↑/REV↓ が意図した場面で表示される")
+    print("3. 昇格 と 上反転/下反転 が意図した場面で表示される")
     print("4. 短期足(例: 5m/15m)で線増殖や描画欠落がない")
     print("5. 長期足(例: 1h/4h)で線増殖や描画欠落がない")
 
