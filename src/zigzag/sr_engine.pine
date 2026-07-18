@@ -1,0 +1,209 @@
+// @function 水平線の描画スタイルを状態に応じて更新する
+// @param targetLine 更新対象ライン
+// @param lineState ライン状態（Active/Flipped/Broken）
+// @param lineRole ライン役割（レジ/サポ）
+// @param resistanceColor レジスタンス色
+// @param supportColor サポート色
+// @param brokenColor 完全ブレイク色
+// @return なし
+f_apply_sr_line_style(targetLine, lineState, lineRole, resistanceColor, supportColor, brokenColor) =>
+    appliedStyle = lineState == 3 ? line.style_dotted : line.style_solid
+    color appliedColor = lineState == 3 ? brokenColor : (lineRole == 1 ? resistanceColor : supportColor)
+    line.set_style(targetLine, appliedStyle)
+    line.set_color(targetLine, appliedColor)
+
+// @function 指定バー範囲の平均出来高を算出する
+// @param startBar 開始バーインデックス（含む）
+// @param endBar 終了バーインデックス（含む）
+// @return 平均出来高（算出不能時はna）
+f_calc_average_volume_between_bars(startBar, endBar) =>
+    float volumeSum = 0.0
+    int volumeCount = 0
+    if not na(startBar) and not na(endBar) and endBar >= startBar
+        for barCursor = startBar to endBar
+            int historyIndex = bar_index - barCursor
+            if historyIndex >= 0
+                volumeSum := volumeSum + volume[historyIndex]
+                volumeCount := volumeCount + 1
+    float averageVolume = volumeCount > 0 ? volumeSum / volumeCount : na
+    averageVolume
+
+// @function ボックス配列へ要素を追加し、上限超過分を削除する
+// @param targetBoxes ボックス配列
+// @param newBox 追加するボックス
+// @param maxBoxCount 保持上限
+// @return なし
+f_append_box_with_cap(targetBoxes, newBox, maxBoxCount) =>
+    array.push(targetBoxes, newBox)
+    if array.size(targetBoxes) > maxBoxCount
+        box oldBox = array.shift(targetBoxes)
+        box.delete(oldBox)
+
+// @function レジーム転換専用ライン配列へ要素を追加し、上限超過分を削除する
+// @param reversalLines レジーム転換専用ライン配列
+// @param newReversalLine 追加する転換ライン
+// @param maxReversalLinesCount 保持上限
+// @return なし
+f_append_reversal_line_with_cap(reversalLines, newReversalLine, maxReversalLinesCount) =>
+    array.push(reversalLines, newReversalLine)
+    if array.size(reversalLines) > maxReversalLinesCount
+        line oldReversalLine = array.shift(reversalLines)
+        line.delete(oldReversalLine)
+
+// @type レジサポ水平線の追跡情報を1要素に集約する
+type SRLine
+    line ln
+    float price
+    int role
+    int state
+    int createdBar
+    int brokenBar
+    bool watchArmed
+    int watchFirstBar
+    float watchFirstExtreme
+    bool watchInstitutionalBacked
+    float watchRangeVolumeAverage
+    bool isRegimeCandidate
+
+// @function 水平線管理配列から指定インデックスの要素を削除する
+// @param horizontalLines SRLine配列
+// @param targetIndex 削除対象インデックス
+// @return なし
+f_delete_sr_line_at(horizontalLines, targetIndex) =>
+    SRLine targetLine = array.get(horizontalLines, targetIndex)
+    line.delete(targetLine.ln)
+    array.remove(horizontalLines, targetIndex)
+
+// @function レジサポ配列を更新し、レジーム転換シグナルを評価する
+// @param horizontalLines SRLine配列
+// @param reversalLines レジーム転換専用ライン配列
+// @param expiryBarsAfterBreak Broken後の削除猶予本数
+// @param srSecondBreakConfirmMode 2本目確定条件
+// @param srConfirmModeFirstExtreme 足1極値更新モード名
+// @param srStateActive Active状態値
+// @param srStateFlipped Flipped状態値
+// @param srStateBroken Broken状態値
+// @param srRoleResistance レジスタンス役割値
+// @param srRoleSupport サポート役割値
+// @param regimeBullish 強気レジーム値
+// @param regimeBearish 弱気レジーム値
+// @param currentRegime 現在レジーム値
+// @param pivotSourceHigh ピボット判定高値
+// @param pivotSourceLow ピボット判定安値
+// @param resistanceLineColor レジ色
+// @param supportLineColor サポ色
+// @param brokenLineColor broken色
+// @param reversalLineColor 転換ライン色
+// @param reversalLineWidth 転換ライン太さ
+// @param maxReversalLinesCount 転換ライン保持上限
+// @param isInstitutionalSignal 機関性シグナル有無
+// @param barHasCoreTimeFvg 現在バーのコアタイムFVG有無
+// @return [転換確定, プレミアム, 強気転換, 転換価格, 転換時刻, 更新後レジーム]
+f_update_sr_lines(horizontalLines, reversalLines, expiryBarsAfterBreak, srSecondBreakConfirmMode, srConfirmModeFirstExtreme, srStateActive, srStateFlipped, srStateBroken, srRoleResistance, srRoleSupport, regimeBullish, regimeBearish, currentRegime, pivotSourceHigh, pivotSourceLow, resistanceLineColor, supportLineColor, brokenLineColor, reversalLineColor, reversalLineWidth, maxReversalLinesCount, isInstitutionalSignal, barHasCoreTimeFvg) =>
+    bool regimeShiftConfirmedSignal = false
+    bool regimeShiftIsPremium = false
+    bool regimeShiftIsBullish = false
+    float regimeShiftSignalPrice = na
+    int regimeShiftSignalTime = na
+    int nextRegimeState = currentRegime
+
+    int horizontalIndex = array.size(horizontalLines) - 1
+    while horizontalIndex >= 0
+        SRLine currentLine = array.get(horizontalLines, horizontalIndex)
+        int currentState = currentLine.state
+        int currentRole = currentLine.role
+        float currentPrice = currentLine.price
+        bool watchActive = currentLine.watchArmed
+        int watchStartBar = currentLine.watchFirstBar
+        float watchFirstExtreme = currentLine.watchFirstExtreme
+        bool isDeleted = false
+        bool shouldMoveToReversalLines = false
+
+        if currentState == srStateBroken
+            int brokenBarIndex = currentLine.brokenBar
+            bool hasExpiry = not na(brokenBarIndex) and bar_index - brokenBarIndex >= expiryBarsAfterBreak
+            if hasExpiry
+                f_delete_sr_line_at(horizontalLines, horizontalIndex)
+                isDeleted := true
+
+        if not isDeleted and currentState != srStateBroken
+            if not watchActive
+                bool firstBreakDetected = (currentRole == srRoleResistance and close > currentPrice) or (currentRole == srRoleSupport and close < currentPrice)
+                if firstBreakDetected
+                    float storedExtreme = currentRole == srRoleResistance ? pivotSourceHigh : pivotSourceLow
+                    float rangeAverageVolume = f_calc_average_volume_between_bars(currentLine.createdBar, bar_index - 1)
+                    currentLine.watchArmed := true
+                    currentLine.watchFirstBar := bar_index
+                    currentLine.watchFirstExtreme := storedExtreme
+                    currentLine.watchInstitutionalBacked := isInstitutionalSignal or barHasCoreTimeFvg
+                    currentLine.watchRangeVolumeAverage := rangeAverageVolume
+            else
+                bool isNextBar = not na(watchStartBar) and bar_index == watchStartBar + 1
+                bool isTimingMiss = na(watchStartBar) or bar_index > watchStartBar + 1
+                bool breakConfirmed = false
+                bool volumeBacked = false
+                bool institutionalBackedBreak = currentLine.watchInstitutionalBacked or barHasCoreTimeFvg
+
+                if isNextBar
+                    bool confirmByFirstExtreme = false
+                    bool confirmByLinePrice = false
+                    if currentRole == srRoleResistance
+                        confirmByFirstExtreme := close > watchFirstExtreme
+                        confirmByLinePrice := close > currentPrice
+                    else
+                        confirmByFirstExtreme := close < watchFirstExtreme
+                        confirmByLinePrice := close < currentPrice
+                    breakConfirmed := srSecondBreakConfirmMode == srConfirmModeFirstExtreme ? confirmByFirstExtreme : confirmByLinePrice
+                    float breakAverageVolume = f_calc_average_volume_between_bars(watchStartBar, bar_index)
+                    volumeBacked := not na(currentLine.watchRangeVolumeAverage) and not na(breakAverageVolume) and breakAverageVolume > currentLine.watchRangeVolumeAverage
+
+                if breakConfirmed
+                    int transitionedState = currentState
+                    int transitionedRole = currentRole
+                    if currentState == srStateActive
+                        transitionedState := srStateFlipped
+                        transitionedRole := currentRole == srRoleResistance ? srRoleSupport : srRoleResistance
+                    else
+                        transitionedState := srStateBroken
+                    currentLine.state := transitionedState
+                    currentLine.role := transitionedRole
+                    if transitionedState == srStateBroken
+                        currentLine.brokenBar := bar_index
+                    line.set_extend(currentLine.ln, extend.none)
+                    line.set_x2(currentLine.ln, time)
+                    f_apply_sr_line_style(currentLine.ln, transitionedState, transitionedRole, resistanceLineColor, supportLineColor, brokenLineColor)
+
+                    if transitionedState == srStateFlipped and currentLine.isRegimeCandidate and not regimeShiftConfirmedSignal
+                        bool isBullishBreak = currentRole == srRoleResistance
+                        int expectedRegime = isBullishBreak ? regimeBullish : regimeBearish
+                        bool isNewRegimeShift = nextRegimeState != expectedRegime
+                        if isNewRegimeShift
+                            bool isPremiumSignal = institutionalBackedBreak or volumeBacked
+                            line.set_style(currentLine.ln, line.style_solid)
+                            line.set_color(currentLine.ln, reversalLineColor)
+                            line.set_width(currentLine.ln, reversalLineWidth)
+                            f_append_reversal_line_with_cap(reversalLines, currentLine.ln, maxReversalLinesCount)
+                            shouldMoveToReversalLines := true
+                            nextRegimeState := expectedRegime
+                            regimeShiftConfirmedSignal := true
+                            regimeShiftIsPremium := isPremiumSignal
+                            regimeShiftIsBullish := isBullishBreak
+                            regimeShiftSignalPrice := currentPrice
+                            regimeShiftSignalTime := time
+
+                bool shouldResetWatch = breakConfirmed or isNextBar or isTimingMiss
+                if shouldResetWatch
+                    currentLine.watchArmed := false
+                    currentLine.watchFirstBar := na
+                    currentLine.watchFirstExtreme := na
+                    currentLine.watchInstitutionalBacked := false
+                    currentLine.watchRangeVolumeAverage := na
+
+                if shouldMoveToReversalLines
+                    array.remove(horizontalLines, horizontalIndex)
+                else
+                    array.set(horizontalLines, horizontalIndex, currentLine)
+
+        horizontalIndex := horizontalIndex - 1
+
+    [regimeShiftConfirmedSignal, regimeShiftIsPremium, regimeShiftIsBullish, regimeShiftSignalPrice, regimeShiftSignalTime, nextRegimeState]

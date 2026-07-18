@@ -3,4 +3,5 @@
 // @return なし
 //#include "zigzag/core_math.pine"
 //#include "zigzag/rendering.pine"
+//#include "zigzag/sr_engine.pine"
 //#include "zigzag/state_machine.pine"
