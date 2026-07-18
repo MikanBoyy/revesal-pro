@@ -12,30 +12,79 @@ f_apply_sr_line_style(targetLine, lineState, lineRole, resistanceColor, supportC
     line.set_style(targetLine, appliedStyle)
     line.set_color(targetLine, appliedColor)
 
+// @function 日本時間のコアタイム内かを判定する
+// @param なし
+// @return コアタイム内ならtrue
+f_is_core_time_jst() =>
+    int jstHour = hour(time, "Asia/Tokyo")
+    int jstMinute = minute(time, "Asia/Tokyo")
+    int totalMinutes = jstHour * 60 + jstMinute
+    bool isTokyoCore = totalMinutes >= 570 and totalMinutes < 660
+    bool isLondonCore = totalMinutes >= 990 and totalMinutes < 1080
+    bool isNewYorkCore = totalMinutes >= 1290 or totalMinutes < 60
+    isTokyoCore or isLondonCore or isNewYorkCore
+
+// @function 指定バー範囲の平均出来高を算出する
+// @param startBar 開始バーインデックス（含む）
+// @param endBar 終了バーインデックス（含む）
+// @return 平均出来高（算出不能時はna）
+f_calc_average_volume_between_bars(startBar, endBar) =>
+    float volumeSum = 0.0
+    int volumeCount = 0
+    if not na(startBar) and not na(endBar) and endBar >= startBar
+        for barCursor = startBar to endBar
+            int historyIndex = bar_index - barCursor
+            if historyIndex >= 0
+                volumeSum := volumeSum + volume[historyIndex]
+                volumeCount := volumeCount + 1
+    float averageVolume = volumeCount > 0 ? volumeSum / volumeCount : na
+    averageVolume
+
+// @function ボックス配列へ要素を追加し、上限超過分を削除する
+// @param targetBoxes ボックス配列
+// @param newBox 追加するボックス
+// @param maxBoxCount 保持上限
+// @return なし
+f_append_box_with_cap(targetBoxes, newBox, maxBoxCount) =>
+    array.push(targetBoxes, newBox)
+    if array.size(targetBoxes) > maxBoxCount
+        box oldBox = array.shift(targetBoxes)
+        box.delete(oldBox)
+
+// @function レジーム転換専用ライン配列へ要素を追加し、上限超過分を削除する
+// @param reversalLines レジーム転換専用ライン配列
+// @param newReversalLine 追加する転換ライン
+// @param maxReversalLinesCount 保持上限
+// @return なし
+f_append_reversal_line_with_cap(reversalLines, newReversalLine, maxReversalLinesCount) =>
+    array.push(reversalLines, newReversalLine)
+    if array.size(reversalLines) > maxReversalLinesCount
+        line oldReversalLine = array.shift(reversalLines)
+        line.delete(oldReversalLine)
+
+// @type レジサポ水平線の追跡情報を1要素に集約する
+type SRLine
+    line ln
+    float price
+    int role
+    int state
+    int createdBar
+    int brokenBar
+    bool watchArmed
+    int watchFirstBar
+    float watchFirstExtreme
+    bool watchInstitutionalBacked
+    float watchRangeVolumeAverage
+    bool isRegimeCandidate
+
 // @function 水平線管理配列から指定インデックスの要素を削除する
-// @param horizontalLines ライン配列
-// @param linePrices 価格配列
-// @param lineRoles 役割配列
-// @param lineStates 状態配列
-// @param createdBars 生成バー配列
-// @param brokenBars 最終ブレイク確定バー配列
-// @param watchArmed 足1監視中フラグ配列
-// @param watchFirstBars 足1のバー番号配列
-// @param watchFirstExtremes 足1の高値/安値配列
+// @param horizontalLines SRLine配列
 // @param targetIndex 削除対象インデックス
 // @return なし
-f_delete_sr_line_at(horizontalLines, linePrices, lineRoles, lineStates, createdBars, brokenBars, watchArmed, watchFirstBars, watchFirstExtremes, targetIndex) =>
-    line targetLine = array.get(horizontalLines, targetIndex)
-    line.delete(targetLine)
+f_delete_sr_line_at(horizontalLines, targetIndex) =>
+    SRLine targetLine = array.get(horizontalLines, targetIndex)
+    line.delete(targetLine.ln)
     array.remove(horizontalLines, targetIndex)
-    array.remove(linePrices, targetIndex)
-    array.remove(lineRoles, targetIndex)
-    array.remove(lineStates, targetIndex)
-    array.remove(createdBars, targetIndex)
-    array.remove(brokenBars, targetIndex)
-    array.remove(watchArmed, targetIndex)
-    array.remove(watchFirstBars, targetIndex)
-    array.remove(watchFirstExtremes, targetIndex)
 
 // @function 高安値追従型ZigZagを描画する
 // @param なし
@@ -49,6 +98,9 @@ zz_run() =>
     int SR_STATE_ACTIVE = 1
     int SR_STATE_FLIPPED = 2
     int SR_STATE_BROKEN = 3
+    int REGIME_UNKNOWN = 0
+    int REGIME_BULLISH = 1
+    int REGIME_BEARISH = -1
     int TABLE_COLUMNS = 2
     int TABLE_ROWS = 4
     int TABLE_LAST_COLUMN_INDEX = 1
@@ -60,6 +112,9 @@ zz_run() =>
     string SR_CONFIRM_MODE_LINE_PRICE = "ライン価格維持"
     color HIGH_SIDE_LABEL_COLOR = #20a35a
     color LOW_SIDE_LABEL_COLOR = #d45555
+    color REVERSAL_LINE_COLOR_DEFAULT = #9932CC
+    color REVERSAL_LABEL_PREMIUM_COLOR = #7A1CAC
+    color REVERSAL_LABEL_NORMAL_COLOR = #8E63CE
 
     int atrPeriod = input.int(14, "ATR期間", minval=1, tooltip="動的反転閾値の基準となるATR期間")
     float atrMultiplier = input.float(1.8, "ATR乗数k", minval=0.1, step=0.1, tooltip="反転閾値の基礎係数（反転閾値 = (k×ATR)×(0.6+ER×0.8)）")
@@ -77,6 +132,13 @@ zz_run() =>
     bool showRealtimeLeg = input.bool(true, "未確定レッグを表示", tooltip="最後の確定ピボットから現在の暫定極値への点線を表示")
     bool useBodyForPivotDetection = input.bool(false, "ZigZag判定を実体ベースにする", tooltip="ONでopen/close、OFFでhigh/lowを使って極値判定します")
     string srSecondBreakConfirmMode = input.string(SR_CONFIRM_MODE_LINE_PRICE, "レジサポ2本目確定条件", options=[SR_CONFIRM_MODE_LINE_PRICE, SR_CONFIRM_MODE_FIRST_EXTREME], tooltip="ライン価格維持: 足2終値がライン外側を維持で確定 / 足1極値更新: 足2終値が足1高安を更新で確定")
+    bool showCoreTimeFvg = input.bool(true, "コアタイムFVGを表示", tooltip="日本時間コアタイム内に発生したFVGのみを描画します")
+    int maxCoreTimeFvgBoxes = input.int(80, "コアタイムFVG保持数", minval=10, maxval=300, tooltip="古いFVGボックスは自動削除")
+    color bullishCoreFvgColor = input.color(color.new(#1f9d55, 80), "上昇FVG色", tooltip="Low > High[2] の不均衡を描画する色")
+    color bearishCoreFvgColor = input.color(color.new(#cc3d3d, 80), "下降FVG色", tooltip="High < Low[2] の不均衡を描画する色")
+    color reversalLineColor = input.color(color.new(REVERSAL_LINE_COLOR_DEFAULT, 0), "転換ライン色", tooltip="転換確定ラインを強調表示する色")
+    int reversalLineWidth = input.int(2, "転換ライン太さ", minval=2, maxval=5, tooltip="転換確定時のライン太さ")
+    int maxReversalLinesCount = input.int(40, "転換ライン保持本数", minval=30, maxval=50, tooltip="レジーム転換専用ラインの最大保持本数（古い順に削除）")
     color upColor = input.color(color.new(color.lime, 0), "上昇レッグ色")
     color downColor = input.color(color.new(color.red, 0), "下降レッグ色")
     int lineWidth = input.int(4, "ライン幅", minval=1, maxval=4)
@@ -89,6 +151,12 @@ zz_run() =>
     float signalLabelOffsetPrice = ta.atr(SIGNAL_LABEL_ATR_PERIOD) * SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER
     float pivotSourceHigh = useBodyForPivotDetection ? math.max(open, close) : high
     float pivotSourceLow = useBodyForPivotDetection ? math.min(open, close) : low
+    bool isCoreTime = f_is_core_time_jst()
+    bool hasBullishFvg = bar_index >= 2 and low > high[2]
+    bool hasBearishFvg = bar_index >= 2 and high < low[2]
+    bool hasCoreTimeBullishFvg = isCoreTime and hasBullishFvg
+    bool hasCoreTimeBearishFvg = isCoreTime and hasBearishFvg
+    bool barHasCoreTimeFvg = hasCoreTimeBullishFvg or hasCoreTimeBearishFvg
 
     var int confirmedPivotType = PIVOT_TYPE_NONE
     var float confirmedPivotPrice = na
@@ -108,21 +176,36 @@ zz_run() =>
     var line realtimeLegLine = na
     var table hudTable = table.new(position.top_right, TABLE_COLUMNS, TABLE_ROWS, border_width=1)
     var array<label> signalLabels = array.new<label>()
-    var array<line> horizontalLines = array.new<line>()
-    var array<float> horizontalLinePrices = array.new<float>()
-    var array<int> horizontalLineRoles = array.new<int>()
-    var array<int> horizontalLineStates = array.new<int>()
-    var array<int> horizontalLineCreatedBars = array.new<int>()
-    var array<int> horizontalLineBrokenBars = array.new<int>()
-    var array<bool> horizontalWatchArmed = array.new<bool>()
-    var array<int> horizontalWatchFirstBars = array.new<int>()
-    var array<float> horizontalWatchFirstExtremes = array.new<float>()
+    var array<SRLine> horizontalLines = array.new<SRLine>()
+    var array<line> reversalLines = array.new<line>()
+    var array<box> coreTimeFvgBoxes = array.new<box>()
+    var bool isInstitutionalBacked = false
+    var float lastTargetHL = na
+    var float lastTargetLH = na
+    var int currentRegime = REGIME_UNKNOWN
 
     bool reversalConfirmSignal = false
     float reversalConfirmSignalPrice = na
     int reversalConfirmSignalTime = na
     string reversalSignalLabelText = ""
+    string reversalPivotClass = ""
     color reversalSignalLabelColor = na
+    bool regimeShiftConfirmedSignal = false
+    bool regimeShiftIsPremium = false
+    bool regimeShiftIsBullish = false
+    float regimeShiftSignalPrice = na
+    int regimeShiftSignalTime = na
+
+    if barHasCoreTimeFvg
+        isInstitutionalBacked := true
+
+    if showCoreTimeFvg
+        if hasCoreTimeBullishFvg
+            box bullishFvgBox = box.new(bar_index - 2, low, bar_index, high[2], bgcolor=bullishCoreFvgColor, border_color=color.new(bullishCoreFvgColor, 0), xloc=xloc.bar_index)
+            f_append_box_with_cap(coreTimeFvgBoxes, bullishFvgBox, maxCoreTimeFvgBoxes)
+        if hasCoreTimeBearishFvg
+            box bearishFvgBox = box.new(bar_index - 2, low[2], bar_index, high, bgcolor=bearishCoreFvgColor, border_color=color.new(bearishCoreFvgColor, 0), xloc=xloc.bar_index)
+            f_append_box_with_cap(coreTimeFvgBoxes, bearishFvgBox, maxCoreTimeFvgBoxes)
 
     if na(confirmedPivotPrice)
         confirmedPivotPrice := close
@@ -150,7 +233,7 @@ zz_run() =>
         if hasStrongTrend
             shouldConfirm := breakTriggered
         else
-            weakBreakCount := breakTriggered ? weakBreakCount + 1 : math.max(0, weakBreakCount - 1)
+            weakBreakCount := breakTriggered ? weakBreakCount + 1 : 0
             shouldConfirm := weakBreakCount >= 2
 
         if shouldConfirm and not na(legExtremePrice) and not na(legExtremeTime)
@@ -167,7 +250,10 @@ zz_run() =>
             confirmedPivotBarIndex := legExtremeBarIndex
             bool isHigherHigh = na(lastConfirmedHighPivotPrice) or legExtremePrice >= lastConfirmedHighPivotPrice
             reversalSignalLabelText := isHigherHigh ? "HH" : "LH"
+            reversalPivotClass := reversalSignalLabelText
             reversalSignalLabelColor := str.substring(reversalSignalLabelText, 0, 1) == "H" ? HIGH_SIDE_LABEL_COLOR : LOW_SIDE_LABEL_COLOR
+            if reversalSignalLabelText == "LH"
+                lastTargetLH := legExtremePrice
             lastConfirmedHighPivotPrice := legExtremePrice
             reversalConfirmSignal := true
             reversalConfirmSignalPrice := legExtremePrice
@@ -178,6 +264,7 @@ zz_run() =>
             legExtremeTime := time
             legExtremeBarIndex := bar_index
             weakBreakCount := 0
+            isInstitutionalBacked := false
 
     else if activeLegDirection == PIVOT_TYPE_DOWN
         if na(legExtremePrice) or pivotSourceLow <= legExtremePrice
@@ -192,7 +279,7 @@ zz_run() =>
         if hasStrongTrend
             shouldConfirm := breakTriggered
         else
-            weakBreakCount := breakTriggered ? weakBreakCount + 1 : math.max(0, weakBreakCount - 1)
+            weakBreakCount := breakTriggered ? weakBreakCount + 1 : 0
             shouldConfirm := weakBreakCount >= 2
 
         if shouldConfirm and not na(legExtremePrice) and not na(legExtremeTime)
@@ -209,7 +296,10 @@ zz_run() =>
             confirmedPivotBarIndex := legExtremeBarIndex
             bool isLowerLow = na(lastConfirmedLowPivotPrice) or legExtremePrice <= lastConfirmedLowPivotPrice
             reversalSignalLabelText := isLowerLow ? "LL" : "HL"
+            reversalPivotClass := reversalSignalLabelText
             reversalSignalLabelColor := str.substring(reversalSignalLabelText, 0, 1) == "H" ? HIGH_SIDE_LABEL_COLOR : LOW_SIDE_LABEL_COLOR
+            if reversalSignalLabelText == "HL"
+                lastTargetHL := legExtremePrice
             lastConfirmedLowPivotPrice := legExtremePrice
             reversalConfirmSignal := true
             reversalConfirmSignalPrice := legExtremePrice
@@ -220,6 +310,7 @@ zz_run() =>
             legExtremeTime := time
             legExtremeBarIndex := bar_index
             weakBreakCount := 0
+            isInstitutionalBacked := false
 
     if showSignals and reversalConfirmSignal and not na(reversalConfirmSignalPrice) and str.length(reversalSignalLabelText) > 0
         float reversalLabelPrice = confirmedPivotType == PIVOT_TYPE_UP ? reversalConfirmSignalPrice + signalLabelOffsetPrice : reversalConfirmSignalPrice - signalLabelOffsetPrice
@@ -228,36 +319,32 @@ zz_run() =>
 
     if reversalConfirmSignal and not na(confirmedPivotPrice) and not na(confirmedPivotTime)
         int initialLineRole = confirmedPivotType == PIVOT_TYPE_UP ? SR_ROLE_RESISTANCE : SR_ROLE_SUPPORT
+        bool isRegimeCandidateLine = reversalPivotClass == "LH" or reversalPivotClass == "HL"
         line createdHorizontalLine = line.new(confirmedPivotTime, confirmedPivotPrice, time, confirmedPivotPrice, xloc=xloc.bar_time, extend=extend.right, color=resistanceLineColor, style=line.style_solid, width=1)
         f_apply_sr_line_style(createdHorizontalLine, SR_STATE_ACTIVE, initialLineRole, resistanceLineColor, supportLineColor, brokenLineColor)
-        array.push(horizontalLines, createdHorizontalLine)
-        array.push(horizontalLinePrices, confirmedPivotPrice)
-        array.push(horizontalLineRoles, initialLineRole)
-        array.push(horizontalLineStates, SR_STATE_ACTIVE)
-        array.push(horizontalLineCreatedBars, bar_index)
-        array.push(horizontalLineBrokenBars, na)
-        array.push(horizontalWatchArmed, false)
-        array.push(horizontalWatchFirstBars, na)
-        array.push(horizontalWatchFirstExtremes, na)
+        SRLine newSRLine = SRLine.new(createdHorizontalLine, confirmedPivotPrice, initialLineRole, SR_STATE_ACTIVE, bar_index, na, false, na, na, false, na, isRegimeCandidateLine)
+        array.push(horizontalLines, newSRLine)
 
         if array.size(horizontalLines) > maxHorizontalLinesCount
-            f_delete_sr_line_at(horizontalLines, horizontalLinePrices, horizontalLineRoles, horizontalLineStates, horizontalLineCreatedBars, horizontalLineBrokenBars, horizontalWatchArmed, horizontalWatchFirstBars, horizontalWatchFirstExtremes, 0)
+            f_delete_sr_line_at(horizontalLines, 0)
 
     int horizontalIndex = array.size(horizontalLines) - 1
     while horizontalIndex >= 0
-        int currentState = array.get(horizontalLineStates, horizontalIndex)
-        int currentRole = array.get(horizontalLineRoles, horizontalIndex)
-        float currentPrice = array.get(horizontalLinePrices, horizontalIndex)
-        bool watchActive = array.get(horizontalWatchArmed, horizontalIndex)
-        int watchStartBar = array.get(horizontalWatchFirstBars, horizontalIndex)
-        float watchFirstExtreme = array.get(horizontalWatchFirstExtremes, horizontalIndex)
+        SRLine currentLine = array.get(horizontalLines, horizontalIndex)
+        int currentState = currentLine.state
+        int currentRole = currentLine.role
+        float currentPrice = currentLine.price
+        bool watchActive = currentLine.watchArmed
+        int watchStartBar = currentLine.watchFirstBar
+        float watchFirstExtreme = currentLine.watchFirstExtreme
         bool isDeleted = false
+        bool shouldMoveToReversalLines = false
 
         if currentState == SR_STATE_BROKEN
-            int brokenBarIndex = array.get(horizontalLineBrokenBars, horizontalIndex)
+            int brokenBarIndex = currentLine.brokenBar
             bool hasExpiry = not na(brokenBarIndex) and bar_index - brokenBarIndex >= expiryBarsAfterBreak
             if hasExpiry
-                f_delete_sr_line_at(horizontalLines, horizontalLinePrices, horizontalLineRoles, horizontalLineStates, horizontalLineCreatedBars, horizontalLineBrokenBars, horizontalWatchArmed, horizontalWatchFirstBars, horizontalWatchFirstExtremes, horizontalIndex)
+                f_delete_sr_line_at(horizontalLines, horizontalIndex)
                 isDeleted := true
 
         if not isDeleted and currentState != SR_STATE_BROKEN
@@ -265,13 +352,18 @@ zz_run() =>
                 bool firstBreakDetected = (currentRole == SR_ROLE_RESISTANCE and close > currentPrice) or (currentRole == SR_ROLE_SUPPORT and close < currentPrice)
                 if firstBreakDetected
                     float storedExtreme = currentRole == SR_ROLE_RESISTANCE ? pivotSourceHigh : pivotSourceLow
-                    array.set(horizontalWatchArmed, horizontalIndex, true)
-                    array.set(horizontalWatchFirstBars, horizontalIndex, bar_index)
-                    array.set(horizontalWatchFirstExtremes, horizontalIndex, storedExtreme)
+                    float rangeAverageVolume = f_calc_average_volume_between_bars(currentLine.createdBar, bar_index - 1)
+                    currentLine.watchArmed := true
+                    currentLine.watchFirstBar := bar_index
+                    currentLine.watchFirstExtreme := storedExtreme
+                    currentLine.watchInstitutionalBacked := isInstitutionalBacked or barHasCoreTimeFvg
+                    currentLine.watchRangeVolumeAverage := rangeAverageVolume
             else
                 bool isNextBar = not na(watchStartBar) and bar_index == watchStartBar + 1
                 bool isTimingMiss = na(watchStartBar) or bar_index > watchStartBar + 1
                 bool breakConfirmed = false
+                bool volumeBacked = false
+                bool institutionalBackedBreak = currentLine.watchInstitutionalBacked or barHasCoreTimeFvg
 
                 if isNextBar
                     bool confirmByFirstExtreme = false
@@ -283,6 +375,8 @@ zz_run() =>
                         confirmByFirstExtreme := close < watchFirstExtreme
                         confirmByLinePrice := close < currentPrice
                     breakConfirmed := srSecondBreakConfirmMode == SR_CONFIRM_MODE_FIRST_EXTREME ? confirmByFirstExtreme : confirmByLinePrice
+                    float breakAverageVolume = f_calc_average_volume_between_bars(watchStartBar, bar_index)
+                    volumeBacked := not na(currentLine.watchRangeVolumeAverage) and not na(breakAverageVolume) and breakAverageVolume > currentLine.watchRangeVolumeAverage
 
                 if breakConfirmed
                     int transitionedState = currentState
@@ -292,20 +386,44 @@ zz_run() =>
                         transitionedRole := currentRole == SR_ROLE_RESISTANCE ? SR_ROLE_SUPPORT : SR_ROLE_RESISTANCE
                     else
                         transitionedState := SR_STATE_BROKEN
-                    array.set(horizontalLineStates, horizontalIndex, transitionedState)
-                    array.set(horizontalLineRoles, horizontalIndex, transitionedRole)
+                    currentLine.state := transitionedState
+                    currentLine.role := transitionedRole
                     if transitionedState == SR_STATE_BROKEN
-                        array.set(horizontalLineBrokenBars, horizontalIndex, bar_index)
-                    line targetLine = array.get(horizontalLines, horizontalIndex)
-                    line.set_extend(targetLine, extend.none)
-                    line.set_x2(targetLine, time)
-                    f_apply_sr_line_style(targetLine, transitionedState, transitionedRole, resistanceLineColor, supportLineColor, brokenLineColor)
+                        currentLine.brokenBar := bar_index
+                    line.set_extend(currentLine.ln, extend.none)
+                    line.set_x2(currentLine.ln, time)
+                    f_apply_sr_line_style(currentLine.ln, transitionedState, transitionedRole, resistanceLineColor, supportLineColor, brokenLineColor)
+
+                    if transitionedState == SR_STATE_FLIPPED and currentLine.isRegimeCandidate and not regimeShiftConfirmedSignal
+                        bool isBullishBreak = currentRole == SR_ROLE_RESISTANCE
+                        int nextRegime = isBullishBreak ? REGIME_BULLISH : REGIME_BEARISH
+                        bool isNewRegimeShift = currentRegime != nextRegime
+                        if isNewRegimeShift
+                            bool isPremiumSignal = institutionalBackedBreak or volumeBacked
+                            line.set_style(currentLine.ln, line.style_solid)
+                            line.set_color(currentLine.ln, reversalLineColor)
+                            line.set_width(currentLine.ln, reversalLineWidth)
+                            f_append_reversal_line_with_cap(reversalLines, currentLine.ln, maxReversalLinesCount)
+                            shouldMoveToReversalLines := true
+                            currentRegime := nextRegime
+                            regimeShiftConfirmedSignal := true
+                            regimeShiftIsPremium := isPremiumSignal
+                            regimeShiftIsBullish := isBullishBreak
+                            regimeShiftSignalPrice := currentPrice
+                            regimeShiftSignalTime := time
 
                 bool shouldResetWatch = breakConfirmed or isNextBar or isTimingMiss
                 if shouldResetWatch
-                    array.set(horizontalWatchArmed, horizontalIndex, false)
-                    array.set(horizontalWatchFirstBars, horizontalIndex, na)
-                    array.set(horizontalWatchFirstExtremes, horizontalIndex, na)
+                    currentLine.watchArmed := false
+                    currentLine.watchFirstBar := na
+                    currentLine.watchFirstExtreme := na
+                    currentLine.watchInstitutionalBacked := false
+                    currentLine.watchRangeVolumeAverage := na
+
+                if shouldMoveToReversalLines
+                    array.remove(horizontalLines, horizontalIndex)
+                else
+                    array.set(horizontalLines, horizontalIndex, currentLine)
 
         horizontalIndex := horizontalIndex - 1
 
@@ -313,6 +431,15 @@ zz_run() =>
         f_render_hud_minimal(hudTable, hasStrongTrend, efficiencyRatioValue, thresholdPrice, confirmedPivotType)
     else
         table.clear(hudTable, 0, 0, TABLE_LAST_COLUMN_INDEX, TABLE_LAST_ROW_INDEX)
+
+    if showSignals and regimeShiftConfirmedSignal and not na(regimeShiftSignalPrice)
+        string reversalClassText = regimeShiftIsPremium ? "Premium" : "Normal"
+        string reversalArrowText = regimeShiftIsBullish ? "▲" : "▼"
+        string reversalText = reversalArrowText + " Reversal (" + reversalClassText + ")"
+        float reversalPrice = regimeShiftIsBullish ? low - signalLabelOffsetPrice : high + signalLabelOffsetPrice
+        color reversalLabelColor = regimeShiftIsPremium ? REVERSAL_LABEL_PREMIUM_COLOR : REVERSAL_LABEL_NORMAL_COLOR
+        label reversalShiftLabel = label.new(regimeShiftSignalTime, reversalPrice, reversalText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.purple, color=color.new(reversalLabelColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
+        f_append_signal_label_with_cap(signalLabels, reversalShiftLabel, maxSignalLabels)
 
     if not na(realtimeLegLine)
         line.delete(realtimeLegLine)
