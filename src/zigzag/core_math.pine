@@ -53,7 +53,8 @@ f_calc_efficiency_ratio(sourceSeries, period) =>
 // @param atrMultiplier ATR乗数k
 // @return 反転閾値（価格幅）
 f_calc_dynamic_threshold_price(atrValue, erValue, atrMultiplier) =>
-	float thresholdPrice = (atrMultiplier * atrValue) * (2.0 - erValue)
+	float dynamicMultiplier = 0.6 + (erValue * 0.8)
+	float thresholdPrice = (atrMultiplier * atrValue) * dynamicMultiplier
 	thresholdPrice
 
 // @function 直近レンジ幅を終値基準の比率(%)で算出する

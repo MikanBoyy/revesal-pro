@@ -62,7 +62,7 @@ zz_run() =>
     color LOW_SIDE_LABEL_COLOR = #d45555
 
     int atrPeriod = input.int(14, "ATR期間", minval=1, tooltip="動的反転閾値の基準となるATR期間")
-    float atrMultiplier = input.float(1.8, "ATR乗数k", minval=0.1, step=0.1, tooltip="反転閾値 = (k×ATR)×(2.0-ER) のk")
+    float atrMultiplier = input.float(1.8, "ATR乗数k", minval=0.1, step=0.1, tooltip="反転閾値の基礎係数（反転閾値 = (k×ATR)×(0.6+ER×0.8)）")
     int erPeriod = input.int(20, "ER期間", minval=2, tooltip="Efficiency Ratioを算出する期間")
     float erThreshold = input.float(0.45, "ER強弱閾値", minval=0.0, maxval=1.0, step=0.01, tooltip="ERがこの値以上なら1本抜け即時確定")
     color resistanceLineColor = input.color(color.new(#b97f01, 0), "Res_Color", tooltip="レジスタンスライン（有効）の色")
@@ -150,7 +150,7 @@ zz_run() =>
         if hasStrongTrend
             shouldConfirm := breakTriggered
         else
-            weakBreakCount := breakTriggered ? weakBreakCount + 1 : 0
+            weakBreakCount := breakTriggered ? weakBreakCount + 1 : math.max(0, weakBreakCount - 1)
             shouldConfirm := weakBreakCount >= 2
 
         if shouldConfirm and not na(legExtremePrice) and not na(legExtremeTime)
@@ -192,7 +192,7 @@ zz_run() =>
         if hasStrongTrend
             shouldConfirm := breakTriggered
         else
-            weakBreakCount := breakTriggered ? weakBreakCount + 1 : 0
+            weakBreakCount := breakTriggered ? weakBreakCount + 1 : math.max(0, weakBreakCount - 1)
             shouldConfirm := weakBreakCount >= 2
 
         if shouldConfirm and not na(legExtremePrice) and not na(legExtremeTime)
