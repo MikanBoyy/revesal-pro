@@ -114,7 +114,7 @@ zz_run() =>
 
     var array<line> confirmedLegLines = array.new<line>()
     var line realtimeLegLine = na
-    var table hudTable = table.new(position.top_right, TABLE_COLUMNS, TABLE_ROWS, border_width=1)
+    var table hudTable = table.new(position.bottom_left, TABLE_COLUMNS, TABLE_ROWS, border_width=1)
     var array<label> signalLabels = array.new<label>()
     var array<SRLine> horizontalLines = array.new<SRLine>()
     var array<line> reversalLines = array.new<line>()
