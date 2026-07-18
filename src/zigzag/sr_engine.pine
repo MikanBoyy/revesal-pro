@@ -65,6 +65,123 @@ type SRLine
     float watchRangeVolumeAverage
     bool isRegimeCandidate
 
+// @type オーダーブロックの属性情報を1要素に集約する構造体
+type OrderBlock
+    box bx
+    float topPrice
+    float bottomPrice
+    int direction
+    bool isPremium
+    int createdBar
+    int state
+    float erValue
+    int touchCount
+    bool extensionStopped
+    bool wasInsideZone
+
+// @function 指定インデックスのオーダーブロックを削除する
+// @param activeOBs OrderBlock配列
+// @param targetIndex 削除対象インデックス
+// @return なし
+f_delete_order_block_at(activeOBs, targetIndex) =>
+    OrderBlock targetOb = array.get(activeOBs, targetIndex)
+    box.delete(targetOb.bx)
+    array.remove(activeOBs, targetIndex)
+
+// @function オーダーブロック配列を上限本数に収める
+// @param activeOBs OrderBlock配列
+// @param maxObBoxesCount 保持上限
+// @return なし
+f_trim_order_blocks_with_cap(activeOBs, maxObBoxesCount) =>
+    while array.size(activeOBs) > maxObBoxesCount
+        f_delete_order_block_at(activeOBs, 0)
+
+// @function オーダーブロック配列を更新し、Mitigated/Brokenを反映する
+// @param activeOBs OrderBlock配列
+// @param obStateActive Active状態値
+// @param obStateMitigated Mitigated状態値
+// @param obDirectionBullish 強気方向値
+// @param bullishObColor 通常強気OB色
+// @param bearishObColor 通常弱気OB色
+// @param premiumObColor Premium OB色
+// @param obAlphaMitigated Mitigated時の透明度
+// @param obExtensionMode 延長モード
+// @param obModeBrokenUntil Brokenまで延長モード名
+// @param obModeStopAtFirstMitigation 初回Mitigated停止モード名
+// @param obModeStopAtTouchLimit N回接触停止モード名
+// @param obMitigationTouchLimit 延長停止までの接触回数上限
+// @param obMaxAgeBars OB寿命バー数
+// @param obExpiryAction 寿命到達時の処理モード
+// @param obExpiryActionDelete 寿命到達時に削除するモード名
+// @param obExpiryActionDotted 寿命到達時に点線化するモード名
+// @param obStateBroken Broken状態値
+// @return なし
+f_update_order_blocks(activeOBs, obStateActive, obStateMitigated, obDirectionBullish, bullishObColor, bearishObColor, premiumObColor, obAlphaMitigated, obExtensionMode, obModeBrokenUntil, obModeStopAtFirstMitigation, obModeStopAtTouchLimit, obMitigationTouchLimit, obMaxAgeBars, obExpiryAction, obExpiryActionDelete, obExpiryActionDotted, obStateBroken) =>
+    int obIndex = array.size(activeOBs) - 1
+    while obIndex >= 0
+        OrderBlock currentOb = array.get(activeOBs, obIndex)
+        bool isBullishOb = currentOb.direction == obDirectionBullish
+        bool brokenByClose = isBullishOb ? close < currentOb.bottomPrice : close > currentOb.topPrice
+        bool isAgeExpired = obMaxAgeBars > 0 and bar_index - currentOb.createdBar >= obMaxAgeBars
+
+        if brokenByClose
+            f_delete_order_block_at(activeOBs, obIndex)
+        else if isAgeExpired
+            bool shouldDeleteByAge = obExpiryAction == obExpiryActionDelete
+            if shouldDeleteByAge
+                f_delete_order_block_at(activeOBs, obIndex)
+            else
+                color baseColor = currentOb.isPremium ? premiumObColor : (isBullishOb ? bullishObColor : bearishObColor)
+                currentOb.state := obStateBroken
+                currentOb.extensionStopped := true
+                box.set_right(currentOb.bx, bar_index)
+                box.set_bgcolor(currentOb.bx, color.new(baseColor, 96))
+                box.set_border_width(currentOb.bx, 1)
+                box.set_border_style(currentOb.bx, line.style_dotted)
+                box.set_border_color(currentOb.bx, color.new(baseColor, 0))
+                array.set(activeOBs, obIndex, currentOb)
+        else
+            float zoneTop = currentOb.topPrice
+            float zoneBottom = currentOb.bottomPrice
+            bool isInsideZone = high >= zoneBottom and low <= zoneTop
+            bool touchEntry = isInsideZone and not currentOb.wasInsideZone
+
+            if not currentOb.extensionStopped
+                box.set_right(currentOb.bx, bar_index)
+
+            box.set_border_width(currentOb.bx, 0)
+
+            bool canTransitionToMitigated = currentOb.state == obStateActive
+            if canTransitionToMitigated
+                bool isMitigated = isBullishOb ? low < currentOb.topPrice : high > currentOb.bottomPrice
+                if isMitigated
+                    color baseColor = currentOb.isPremium ? premiumObColor : (isBullishOb ? bullishObColor : bearishObColor)
+                    currentOb.state := obStateMitigated
+                    currentOb.touchCount := 1
+                    box.set_bgcolor(currentOb.bx, color.new(baseColor, obAlphaMitigated))
+
+                    bool shouldStopOnFirstMitigation = obExtensionMode == obModeStopAtFirstMitigation
+                    bool shouldStopOnTouchLimit = obExtensionMode == obModeStopAtTouchLimit and currentOb.touchCount >= obMitigationTouchLimit
+                    if shouldStopOnFirstMitigation or shouldStopOnTouchLimit
+                        currentOb.extensionStopped := true
+
+            else if currentOb.state == obStateMitigated and touchEntry
+                currentOb.touchCount := currentOb.touchCount + 1
+                bool shouldStopOnTouchLimit = obExtensionMode == obModeStopAtTouchLimit and currentOb.touchCount >= obMitigationTouchLimit
+                if shouldStopOnTouchLimit
+                    currentOb.extensionStopped := true
+
+            if obExtensionMode == obModeBrokenUntil
+                currentOb.extensionStopped := false
+
+            if obExpiryAction == obExpiryActionDotted and currentOb.state != obStateBroken
+                box.set_border_width(currentOb.bx, 0)
+
+            currentOb.wasInsideZone := isInsideZone
+            array.set(activeOBs, obIndex, currentOb)
+
+        obIndex := obIndex - 1
+
 // @function 水平線管理配列から指定インデックスの要素を削除する
 // @param horizontalLines SRLine配列
 // @param targetIndex 削除対象インデックス
