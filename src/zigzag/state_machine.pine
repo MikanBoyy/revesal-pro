@@ -427,7 +427,7 @@ zz_run() =>
     if showSignals and regimeShiftConfirmedSignal and not na(regimeShiftSignalPrice)
         string reversalArrowText = regimeShiftIsBullish ? "▲" : "▼"
         string reversalText = reversalArrowText + "TC"
-        float reversalPrice = regimeShiftIsBullish ? low - signalLabelOffsetPrice : high + signalLabelOffsetPrice
+        float reversalPrice = regimeShiftSignalPrice
         color reversalLabelColor = regimeShiftIsPremium ? REVERSAL_LABEL_PREMIUM_COLOR : REVERSAL_LABEL_NORMAL_COLOR
         label reversalShiftLabel = label.new(regimeShiftSignalTime, reversalPrice, reversalText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.purple, color=color.new(reversalLabelColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
         f_append_signal_label_with_cap(signalLabels, reversalShiftLabel, maxSignalLabels)
