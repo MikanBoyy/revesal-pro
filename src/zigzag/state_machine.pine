@@ -121,7 +121,7 @@ zz_run() =>
     bool showRealtimeLeg = input.bool(true, "未確定レッグを表示", tooltip="最後の確定ピボットから現在の暫定極値への点線を表示")
     bool useBodyForPivotDetection = input.bool(false, "ZigZag判定を実体ベースにする", tooltip="ONでopen/close、OFFでhigh/lowを使って極値判定します")
     string srSecondBreakConfirmMode = input.string(SR_CONFIRM_MODE_LINE_PRICE, "レジサポ2本目確定条件", options=[SR_CONFIRM_MODE_LINE_PRICE, SR_CONFIRM_MODE_FIRST_EXTREME], tooltip="ライン価格維持: 足2終値がライン外側を維持で確定 / 足1極値更新: 足2終値が足1高安を更新で確定")
-    bool showCoreTimeFvg = input.bool(true, "コアタイムFVGを表示", tooltip="日本時間コアタイム内に発生したFVGのみを描画します")
+    bool showCoreTimeFvg = input.bool(false, "コアタイムFVGを表示", tooltip="日本時間コアタイム内に発生したFVGのみを描画します")
     int maxCoreTimeFvgBoxes = input.int(80, "コアタイムFVG保持数", minval=10, maxval=300, tooltip="古いFVGボックスは自動削除")
     color bullishCoreFvgColor = input.color(color.new(#1f9d55, 80), "上昇FVG色", tooltip="Low > High[2] の不均衡を描画する色")
     color bearishCoreFvgColor = input.color(color.new(#cc3d3d, 80), "下降FVG色", tooltip="High < Low[2] の不均衡を描画する色")
