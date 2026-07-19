@@ -354,17 +354,19 @@ zz_run() =>
             breakConfirmationCount := 0
             institutionalSignalActive := false
 
-    if showSignals and reversalConfirmSignal and not na(reversalConfirmSignalPrice) and str.length(reversalSignalLabelText) > 0
+    bool shouldShowPivotSignalLabel = reversalSignalLabelText == "HH" or reversalSignalLabelText == "LL"
+    if showSignals and reversalConfirmSignal and shouldShowPivotSignalLabel and not na(reversalConfirmSignalPrice) and str.length(reversalSignalLabelText) > 0
         float reversalLabelPrice = confirmedPivotType == PIVOT_TYPE_UP ? reversalConfirmSignalPrice + signalLabelOffsetPrice : reversalConfirmSignalPrice - signalLabelOffsetPrice
         label reversalLabel = label.new(reversalConfirmSignalTime, reversalLabelPrice, reversalSignalLabelText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.new(reversalSignalLabelColor, 0), color=color.new(reversalSignalLabelColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
         f_append_signal_label_with_cap(signalLabels, reversalLabel, maxSignalLabels)
 
     if reversalConfirmSignal and not na(confirmedPivotPrice) and not na(confirmedPivotTime)
         int initialLineRole = confirmedPivotType == PIVOT_TYPE_UP ? SR_ROLE_RESISTANCE : SR_ROLE_SUPPORT
+        bool shouldShowHorizontalLine = reversalPivotClass == "HH" or reversalPivotClass == "LL"
         bool isRegimeCandidateLine = reversalPivotClass == "LH" or reversalPivotClass == "HL"
         line createdHorizontalLine = line.new(confirmedPivotTime, confirmedPivotPrice, time, confirmedPivotPrice, xloc=xloc.bar_time, extend=extend.right, color=resistanceLineColor, style=line.style_solid, width=1)
-        f_apply_sr_line_style(createdHorizontalLine, SR_STATE_ACTIVE, initialLineRole, resistanceLineColor, supportLineColor, brokenLineColor)
-        SRLine newSRLine = SRLine.new(createdHorizontalLine, confirmedPivotPrice, initialLineRole, SR_STATE_ACTIVE, bar_index, na, false, na, na, false, na, isRegimeCandidateLine)
+        f_apply_sr_line_style(createdHorizontalLine, SR_STATE_ACTIVE, initialLineRole, resistanceLineColor, supportLineColor, brokenLineColor, shouldShowHorizontalLine)
+        SRLine newSRLine = SRLine.new(createdHorizontalLine, confirmedPivotPrice, initialLineRole, SR_STATE_ACTIVE, bar_index, na, false, na, na, false, na, shouldShowHorizontalLine, isRegimeCandidateLine)
         array.push(horizontalLines, newSRLine)
 
         if array.size(horizontalLines) > maxHorizontalLinesCount

@@ -5,10 +5,12 @@
 // @param resistanceColor レジスタンス色
 // @param supportColor サポート色
 // @param brokenColor 完全ブレイク色
+// @param isVisible チャート上に可視表示するか
 // @return なし
-f_apply_sr_line_style(targetLine, lineState, lineRole, resistanceColor, supportColor, brokenColor) =>
+f_apply_sr_line_style(targetLine, lineState, lineRole, resistanceColor, supportColor, brokenColor, isVisible) =>
     appliedStyle = lineState == 3 ? line.style_dotted : line.style_solid
-    color appliedColor = lineState == 3 ? brokenColor : (lineRole == 1 ? resistanceColor : supportColor)
+    color baseColor = lineState == 3 ? brokenColor : (lineRole == 1 ? resistanceColor : supportColor)
+    color appliedColor = isVisible ? baseColor : color.new(baseColor, 100)
     line.set_style(targetLine, appliedStyle)
     line.set_color(targetLine, appliedColor)
 
@@ -63,6 +65,7 @@ type SRLine
     float watchFirstExtreme
     bool watchInstitutionalBacked
     float watchRangeVolumeAverage
+    bool isVisible
     bool isRegimeCandidate
 
 // @type オーダーブロックの属性情報を1要素に集約する構造体
@@ -288,7 +291,7 @@ f_update_sr_lines(horizontalLines, reversalLines, expiryBarsAfterBreak, srSecond
                         currentLine.brokenBar := bar_index
                     line.set_extend(currentLine.ln, extend.none)
                     line.set_x2(currentLine.ln, time)
-                    f_apply_sr_line_style(currentLine.ln, transitionedState, transitionedRole, resistanceLineColor, supportLineColor, brokenLineColor)
+                    f_apply_sr_line_style(currentLine.ln, transitionedState, transitionedRole, resistanceLineColor, supportLineColor, brokenLineColor, currentLine.isVisible)
 
                     if transitionedState == srStateFlipped and currentLine.isRegimeCandidate and not regimeShiftConfirmedSignal
                         bool isBullishBreak = currentRole == srRoleResistance
