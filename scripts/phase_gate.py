@@ -47,7 +47,7 @@ def verify_dist_content() -> list[str]:
 
 def verify_bom() -> list[str]:
     issues: list[str] = []
-    for file_path in [SRC_DIR / "main.pine", SRC_DIR / "zigzag.pine", DIST_FILE]:
+    for file_path in [SRC_DIR / "main.pine", DIST_FILE]:
         if not file_path.exists():
             issues.append(f"必須ファイルが見つかりません: {file_path}")
             continue

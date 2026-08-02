@@ -1,2 +1,0 @@
-// 互換性維持: 旧include先から新しい分割エントリへ委譲する
-//#include "zigzag/index.pine"
