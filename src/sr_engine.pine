@@ -82,6 +82,27 @@ type OrderBlock
     bool extensionStopped
     bool wasInsideZone
 
+// @function OBゾーン内での反発確定を検出し、該当OBの方向とPremium属性を返す
+// @param activeOBs OrderBlock配列
+// @param direction 判定方向（1=強気/ロング、-1=弱気/ショート）
+// @return [反発確定の有無, Premium OBか]
+// Why: タッチ即時ではなくゾーン内での方向一致終値確定を要求し、突き抜け事故を避ける。状態はActive/Mitigated双方を対象とし、初回・再タッチ両方の押し目を拾う
+f_check_ob_reversal_confirmation(activeOBs, direction) =>
+    bool isConfirmed = false
+    bool isPremiumMatch = false
+    int obIndex = array.size(activeOBs) - 1
+    while obIndex >= 0 and not isConfirmed
+        OrderBlock currentOb = array.get(activeOBs, obIndex)
+        bool isDirectionMatch = currentOb.direction == direction
+        bool isInsideZone = low <= currentOb.topPrice and high >= currentOb.bottomPrice
+        bool isBullishReversal = direction == 1 and close > open and close > currentOb.bottomPrice
+        bool isBearishReversal = direction == -1 and close < open and close < currentOb.topPrice
+        if isDirectionMatch and isInsideZone and (isBullishReversal or isBearishReversal)
+            isConfirmed := true
+            isPremiumMatch := currentOb.isPremium
+        obIndex := obIndex - 1
+    [isConfirmed, isPremiumMatch]
+
 // @function 指定インデックスのオーダーブロックを削除する
 // @param activeOBs OrderBlock配列
 // @param targetIndex 削除対象インデックス

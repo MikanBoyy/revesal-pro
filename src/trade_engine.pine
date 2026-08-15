@@ -1,0 +1,75 @@
+// @type 疑似トレードの全状態を1要素に集約する構造体
+// Why: Pine Scriptは関数のプリミティブ引数が値渡しのため、ポジション・統計・SL/TPを1つのUDTに集約して参照渡しで一括管理する
+type TradeState
+    int positionDirection      // 保有方向（1=ロング、-1=ショート、0=なし）
+    int openPositionCount      // 保有ポジション数
+    float entryPriceSum        // 建値合計（平均建値算出用）
+    int openPositionCountA     // Aモード（HL/LH確定）保有数
+    int openPositionCountB     // Bモード（OBリテスト）保有数
+    float slPrice              // 現在のSL価格（未設定はna）
+    float tpPrice              // 現在のTP価格（未設定はna）
+    int lastEntryObCreatedBar  // 直近エントリーOBの起点バー（同一OB連続抑止用）
+
+// @type 疑似トレードの累積統計を1要素に集約する構造体
+type TradeStats
+    int totalTradeCount        // 総トレード数（決済発生回数）
+    int winTradeCount          // 勝ちトレード数
+    float grossProfitTicks     // 総利益（ティック換算）
+    float grossLossTicks       // 総損失（ティック換算）
+    float cumulativePnlTicks   // 累積損益（ティック換算）
+    int tradeCountA            // Aモードのトレード数
+    int tradeCountB            // Bモードのトレード数
+    float pnlTicksA            // Aモード累積損益（ティック）
+    float pnlTicksB            // Bモード累積損益（ティック）
+
+// @function ポジションを1件追加し、初回のみSL/TPを設定する
+// @param state TradeState（参照渡しで更新）
+// @param direction エントリー方向（1=ロング、-1=ショート）
+// @param isModeB Bモード（OBリテスト）由来か
+// @param maxPyramidingCount 最大ピラミッティング数
+// @param useSlTp SL/TP有効化
+// @param slReferencePrice SL基準価格（ロング=直近安値、ショート=直近高値）
+// @param riskRewardRatio リスクリワード比
+// @return なし
+// Why: ピラミッティング追加時は既存SL/TPを維持し初回のみ設定する（平均建値変動で既存リスクを崩さないため）
+f_open_position(TradeState state, int direction, bool isModeB, int maxPyramidingCount, bool useSlTp, float slReferencePrice, float riskRewardRatio) =>
+    state.openPositionCount += 1
+    state.positionDirection := direction
+    state.entryPriceSum += close
+    if isModeB
+        state.openPositionCountB += 1
+    else
+        state.openPositionCountA += 1
+    if useSlTp and na(state.slPrice) and not na(slReferencePrice)
+        float riskAmount = direction == 1 ? close - slReferencePrice : slReferencePrice - close
+        if riskAmount > 0
+            state.slPrice := slReferencePrice
+            state.tpPrice := direction == 1 ? close + riskAmount * riskRewardRatio : close - riskAmount * riskRewardRatio
+
+// @function ポジションを全決済し、統計へ損益を記録して状態をリセットする
+// @param state TradeState（参照渡しで更新）
+// @param stats TradeStats（参照渡しで更新）
+// @param exitPrice 決済価格
+// @return なし
+// Why: SL/TP決済とレジーム転換決済で損益記録が重複していたため一元化する。A/B内訳は保有数比率で按分する（全清算のため按分で近似）
+f_close_all_positions(TradeState state, TradeStats stats, float exitPrice) =>
+    float averageEntryPrice = state.entryPriceSum / state.openPositionCount
+    float closedPnlTicks = state.positionDirection * (exitPrice - averageEntryPrice) / syminfo.mintick
+    stats.totalTradeCount += 1
+    stats.winTradeCount += closedPnlTicks > 0 ? 1 : 0
+    stats.grossProfitTicks += math.max(closedPnlTicks, 0.0)
+    stats.grossLossTicks += math.max(-closedPnlTicks, 0.0)
+    stats.cumulativePnlTicks += closedPnlTicks
+    if state.openPositionCountA > 0
+        stats.tradeCountA += 1
+        stats.pnlTicksA += closedPnlTicks * state.openPositionCountA / state.openPositionCount
+    if state.openPositionCountB > 0
+        stats.tradeCountB += 1
+        stats.pnlTicksB += closedPnlTicks * state.openPositionCountB / state.openPositionCount
+    state.positionDirection := 0
+    state.openPositionCount := 0
+    state.openPositionCountA := 0
+    state.openPositionCountB := 0
+    state.entryPriceSum := 0.0
+    state.slPrice := na
+    state.tpPrice := na

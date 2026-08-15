@@ -18,3 +18,17 @@ f_calc_dynamic_threshold_price(atrValue, erValue, atrMultiplier) =>
 	float thresholdPrice = (atrMultiplier * atrValue) * dynamicMultiplier
 	thresholdPrice
 
+// @function 現在時間軸に応じた上位足タイムフレーム文字列を返す
+// @param なし
+// @return 上位足のタイムフレーム文字列（request.security用）
+// Why: 15分未満は1時間、1時間未満は4時間、4時間未満は日、日未満は週を参照し、レンジ幅に応じた十分な上位トレンドを捉える
+f_get_htf_timeframe() =>
+	string htfTimeframe = "W"
+	if timeframe.isseconds or timeframe.isintraday
+		// 秒足・分足・時間足を分単位に正規化して判定（秒足は0扱いで1時間足へ）
+		int currentMinutes = timeframe.isseconds ? 0 : timeframe.multiplier
+		htfTimeframe := currentMinutes < 15 ? "60" : currentMinutes < 60 ? "240" : currentMinutes < 240 ? "D" : "W"
+	else if timeframe.isdaily
+		htfTimeframe := "W"
+	htfTimeframe
+

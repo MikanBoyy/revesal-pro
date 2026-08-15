@@ -4,6 +4,7 @@ indicator("Revesal Pro", overlay=true, max_lines_count=500, max_labels_count=500
 //#include "core_math.pine"
 //#include "rendering.pine"
 //#include "sr_engine.pine"
+//#include "trade_engine.pine"
 //#include "state_machine.pine"
 
 zz_run()
