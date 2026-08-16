@@ -476,8 +476,10 @@ zz_run() =>
         label tcLabel = label.new(time, regimeShiftSignalPrice, "TC", xloc=xloc.bar_time, style=label.style_label_left, textcolor=tcLabelColor, color=color.new(tcLabelColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
         f_append_signal_label_with_cap(signalLabels, tcLabel, maxSignalLabels)
 
-    bool longEntrySignal = reversalConfirmSignal and reversalPivotClass == "HL" and currentRegime == REGIME_BULLISH and trade.positionDirection >= 0 and not exitThisBar and htfFilterAllowsLong
-    bool shortEntrySignal = reversalConfirmSignal and reversalPivotClass == "LH" and currentRegime == REGIME_BEARISH and trade.positionDirection <= 0 and not exitThisBar and htfFilterAllowsShort
+    // Why: 執行足が中立（ER < 閾値）の局面はレンジ・ノイズが支配的で、Aモードのレジーム追随エントリーは
+    //      だましを拾いやすいため、強トレンド時のみ許可する。Bモード（OBリテスト）は別条件で担保するため対象外
+    bool longEntrySignal = reversalConfirmSignal and reversalPivotClass == "HL" and currentRegime == REGIME_BULLISH and trade.positionDirection >= 0 and not exitThisBar and htfFilterAllowsLong and hasStrongTrend
+    bool shortEntrySignal = reversalConfirmSignal and reversalPivotClass == "LH" and currentRegime == REGIME_BEARISH and trade.positionDirection <= 0 and not exitThisBar and htfFilterAllowsShort and hasStrongTrend
     bool canAddPosition = trade.openPositionCount < maxPyramidingCount
 
     if longEntrySignal and canAddPosition
