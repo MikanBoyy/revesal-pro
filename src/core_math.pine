@@ -18,16 +18,39 @@ f_calc_dynamic_threshold_price(atrValue, erValue, atrMultiplier) =>
 	float thresholdPrice = (atrMultiplier * atrValue) * dynamicMultiplier
 	thresholdPrice
 
+// @function ATR・ER・ホライズンから期待変動幅（伸びしろ）を推定し、リスク幅で割って動的RRを算出する
+// @param atrValue ATR値（期待変動幅の距離スケール）
+// @param erValue ER値（0.0-1.0。トレンド効率性の代理指標）
+// @param horizonBars ホライズン（何バー先までの伸びを見込むか）
+// @param boostFactor ブースト係数（強トレンド or コアタイム時に期待変動幅へ掛ける乗数）
+// @param isBoostActive ブースト適用フラグ（isCoreTime or hasStrongTrend を想定）
+// @param slDistance リスク幅（エントリー価格〜SL基準価格の距離）
+// @param rrMin RR下限クランプ
+// @param rrMax RR上限クランプ
+// @param fallbackRr 計算不能時のフォールバックRR
+// @return 動的RR値（計算可能時はrrMin〜rrMaxにクランプ済み）
+// Why: リスク幅が0/負/na、あるいはATR欠損の局面では期待変動幅を推定できないため、
+//      固定RRへフォールバックしてTP計算の破綻を防ぐ。クランプは計算可能時のみ適用し、
+//      フォールバック値はユーザー指定をそのまま尊重する
+f_calc_dynamic_rr(atrValue, erValue, horizonBars, boostFactor, isBoostActive, slDistance, rrMin, rrMax, fallbackRr) =>
+	float safeEr = nz(erValue, 0.0)
+	float safeAtr = nz(atrValue, 0.0)
+	float boost = isBoostActive ? boostFactor : 1.0
+	float expectedMove = safeAtr * horizonBars * (0.5 + safeEr) * boost
+	bool canCalculate = not na(slDistance) and slDistance > 0.0 and safeAtr > 0.0
+	float clampedRr = math.min(math.max(expectedMove / slDistance, rrMin), rrMax)
+	canCalculate ? clampedRr : fallbackRr
+
 // @function 現在時間軸に応じた上位足タイムフレーム文字列を返す
 // @param なし
 // @return 上位足のタイムフレーム文字列（request.security用）
-// Why: 15分未満は1時間、1時間未満は4時間、4時間未満は日、日未満は週を参照し、レンジ幅に応じた十分な上位トレンドを捉える
+// Why: 1分足は15分、15分足は60分、60分足は4時間、4時間足は日、日足は週を上位足として参照し、直近上位トレンドを捉える
 f_get_htf_timeframe() =>
 	string htfTimeframe = "W"
 	if timeframe.isseconds or timeframe.isintraday
-		// 秒足・分足・時間足を分単位に正規化して判定（秒足は0扱いで1時間足へ）
+		// 秒足・分足・時間足を分単位に正規化して判定（秒足は0扱いで15分足へ）
 		int currentMinutes = timeframe.isseconds ? 0 : timeframe.multiplier
-		htfTimeframe := currentMinutes < 15 ? "60" : currentMinutes < 60 ? "240" : currentMinutes < 240 ? "D" : "W"
+		htfTimeframe := currentMinutes < 15 ? "15" : currentMinutes < 60 ? "60" : currentMinutes < 240 ? "240" : "D"
 	else if timeframe.isdaily
 		htfTimeframe := "W"
 	htfTimeframe

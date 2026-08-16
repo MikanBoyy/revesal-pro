@@ -42,8 +42,12 @@ f_append_signal_label_with_cap(signalLabels, newSignalLabel, maxSignalLabels) =>
 // @param htfBearish 上位足が弱気か
 // @param htfErValue 上位足ER値
 // @param useHtfFilter 上位足フィルタ有効か
+// @param useDynamicRr 動的RR有効か（HUD表示の動的/固定の併記に使用）
+// @param dynamicRrLong ロング適用RR（動的RR有効時は算出値、無効時は固定RR）
+// @param dynamicRrShort ショート適用RR（動的RR有効時は算出値、無効時は固定RR）
+// @param fixedRr 固定RR（動的RR無効時の表示用）
 // @return なし
-f_render_combined_hud(hudTable, showDirectionHud, showPerformanceHud, isStrongTrend, erValue, confirmedPivotType, totalTradeCount, winTradeCount, grossProfitTicks, grossLossTicks, cumulativePnlTicks, positionDirection, openPositionCount, maxPyramidingCount, htfTimeframe, htfBullish, htfBearish, htfErValue, useHtfFilter) =>
+f_render_combined_hud(hudTable, showDirectionHud, showPerformanceHud, isStrongTrend, erValue, confirmedPivotType, totalTradeCount, winTradeCount, grossProfitTicks, grossLossTicks, cumulativePnlTicks, positionDirection, openPositionCount, maxPyramidingCount, htfTimeframe, htfBullish, htfBearish, htfErValue, useHtfFilter, useDynamicRr, dynamicRrLong, dynamicRrShort, fixedRr) =>
 	// 行0-3: 方向性HUD。非表示時は当該行のみ消去し、他ブロックの表示を維持する
 	if showDirectionHud
 		string hudErText = (isStrongTrend ? "強い" : "弱い") + " (ER=" + str.tostring(erValue, "#.###") + ")"
@@ -61,10 +65,14 @@ f_render_combined_hud(hudTable, showDirectionHud, showPerformanceHud, isStrongTr
 		table.cell(hudTable, 1, 2, hudDirectionText, text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_VALUE_ALPHA))
 		table.cell(hudTable, 0, 3, "上位足", text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_HEADER_ALPHA))
 		table.cell(hudTable, 1, 3, htfStateText, text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_VALUE_ALPHA))
+		// RR行: 動的RR有効時は方向別の適用値を併記し、無効時は固定値であることを明示して設定ミスの見落としを防ぐ
+		string rrValueText = useDynamicRr ? "L " + str.tostring(dynamicRrLong, "#.##") + " / S " + str.tostring(dynamicRrShort, "#.##") + "（動的）" : str.tostring(fixedRr, "#.##") + "（固定）"
+		table.cell(hudTable, 0, 4, "RR", text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_HEADER_ALPHA))
+		table.cell(hudTable, 1, 4, rrValueText, text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_VALUE_ALPHA))
 	else
-		table.clear(hudTable, 0, 0, 1, 3)
+		table.clear(hudTable, 0, 0, 1, 4)
 
-	// 行4-7: パフォーマンスHUD。非表示時は当該行のみ消去する
+	// 行5-8: パフォーマンスHUD。非表示時は当該行のみ消去する
 	if showPerformanceHud
 		string winRateText = totalTradeCount > 0 ? str.tostring(100.0 * winTradeCount / totalTradeCount, "#.#") + "%" : "-"
 		string tradeSummaryText = str.tostring(totalTradeCount) + " / " + winRateText
@@ -74,13 +82,13 @@ f_render_combined_hud(hudTable, showDirectionHud, showPerformanceHud, isStrongTr
 		string pnlText = (cumulativePnlTicks >= 0 ? "+" : "") + str.tostring(cumulativePnlTicks, "#") + " ticks"
 		string positionCountText = str.tostring(openPositionCount) + "/" + str.tostring(maxPyramidingCount)
 		string positionText = positionDirection == 1 ? "L " + positionCountText : positionDirection == -1 ? "S " + positionCountText : "なし"
-		table.cell(hudTable, 0, 4, "回数/勝率", text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_HEADER_ALPHA))
-		table.cell(hudTable, 1, 4, tradeSummaryText, text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_VALUE_ALPHA))
-		table.cell(hudTable, 0, 5, "PF", text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_HEADER_ALPHA))
-		table.cell(hudTable, 1, 5, profitFactorText, text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_VALUE_ALPHA))
-		table.cell(hudTable, 0, 6, "累積損益", text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_HEADER_ALPHA))
-		table.cell(hudTable, 1, 6, pnlText, text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_VALUE_ALPHA))
-		table.cell(hudTable, 0, 7, "保有状況", text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_HEADER_ALPHA))
-		table.cell(hudTable, 1, 7, positionText, text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_VALUE_ALPHA))
+		table.cell(hudTable, 0, 5, "回数/勝率", text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_HEADER_ALPHA))
+		table.cell(hudTable, 1, 5, tradeSummaryText, text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_VALUE_ALPHA))
+		table.cell(hudTable, 0, 6, "PF", text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_HEADER_ALPHA))
+		table.cell(hudTable, 1, 6, profitFactorText, text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_VALUE_ALPHA))
+		table.cell(hudTable, 0, 7, "累積損益", text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_HEADER_ALPHA))
+		table.cell(hudTable, 1, 7, pnlText, text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_VALUE_ALPHA))
+		table.cell(hudTable, 0, 8, "保有状況", text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_HEADER_ALPHA))
+		table.cell(hudTable, 1, 8, positionText, text_color=color.white, bgcolor=color.new(color.gray, ZZ_HUD_BG_VALUE_ALPHA))
 	else
-		table.clear(hudTable, 0, 4, 1, 7)
+		table.clear(hudTable, 0, 5, 1, 8)

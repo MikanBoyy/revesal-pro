@@ -86,9 +86,10 @@ zz_run() =>
     int REGIME_BULLISH = 1
     int REGIME_BEARISH = -1
     int TABLE_COLUMNS = 2
-    int TABLE_ROWS = 8
+    // Why: 動的RR表示行（RR行）の追加に伴い8→9へ拡張。方向性HUD=行0-4、パフォーマンスHUD=行5-8
+    int TABLE_ROWS = 9
     int TABLE_LAST_COLUMN_INDEX = 1
-    int TABLE_LAST_ROW_INDEX = 7
+    int TABLE_LAST_ROW_INDEX = 8
     int SIGNAL_LABEL_BG_ALPHA = 86
     float SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER = 0.35
     int SIGNAL_LABEL_ATR_PERIOD = 14
@@ -151,7 +152,13 @@ zz_run() =>
     bool showPerformanceHud = input.bool(true, "パフォーマンスHUDを表示", tooltip="疑似トレード成績（トレード数/勝率/PF/累積損益/保有状況）を左中央に表示します")
     bool useHtfFilter = input.bool(true, "上位足フィルタを有効化", tooltip="上位足のトレンド方向と一致するエントリーのみ許可します")
     bool useSlTp = input.bool(true, "SL/TPを有効化", tooltip="SL=直近ピボット、TP=SL幅×RR比で疑似決済します。OFFでレジーム転換のみの決済に戻ります")
-    float riskRewardRatio = input.float(2.0, "リスクリワード比（RR）", minval=0.5, maxval=10.0, step=0.5, tooltip="TP = SL幅 × RR比。損小利大にするため1.5以上を推奨")
+    float riskRewardRatio = input.float(2.0, "リスクリワード比（RR）", minval=0.5, maxval=10.0, step=0.5, tooltip="TP = SL幅 × RR比。損小利大にするため1.5以上を推奨。動的RR有効時は計算不能局面のフォールバックとして使用")
+    // 動的RR: ATR・ER・ホライズンから期待変動幅（伸びしろ）を推定し、SL距離で割ってRRを算出する
+    bool useDynamicRr = input.bool(true, "動的RRを有効化", tooltip="ATR×ホライズン×(0.5+ER)×ブースト係数 を期待変動幅とし、SL距離で割ってRRを動的に決定します。OFFで上記の固定RRに戻ります")
+    int rrHorizonBars = input.int(5, "RRホライズン（バー）", minval=1, maxval=50, tooltip="期待変動幅 = ATR × ホライズン × (0.5+ER) × ブースト係数。何バー先までの伸びを見込むか")
+    float rrMin = input.float(1.0, "動的RR下限", minval=0.5, maxval=10.0, step=0.1, tooltip="動的RRの下限クランプ。SL距離が大きい局面でRRが過小になるのを防ぎます")
+    float rrMax = input.float(5.0, "動的RR上限", minval=0.5, maxval=20.0, step=0.1, tooltip="動的RRの上限クランプ。SL距離が極小の局面で実現性の低い過大RRになるのを防ぎます")
+    float rrBoostFactor = input.float(1.15, "RRブースト係数", minval=1.0, maxval=2.0, step=0.05, tooltip="強トレンド or コアタイム時に期待変動幅へ掛ける乗数。伸びしろ予測を強気方向へ補正します")
     bool useTrailingStop = input.bool(true, "トレーリングストップを有効化", tooltip="含み益が伸びたらSLを引き上げ（ロング）/引き下げ（ショート）て利益を保護します")
     float trailingActivationRr = input.float(1.0, "トレーリング開始（RR倍数）", minval=0.5, maxval=5.0, step=0.5, tooltip="含み益がSL幅×この倍数に達したらトレーリング開始")
 
@@ -381,6 +388,14 @@ zz_run() =>
             breakConfirmationCount := 0
             institutionalSignalActive := false
 
+    // Why: SL基準は方向ごとの確定ピボットを使うため、動的RRも方向別に事前算出する。
+    //      エントリー4箇所で同一式を重複記述すると、保守時に片方だけ修正する事故を招く
+    bool rrBoostActive = isCoreTime or hasStrongTrend
+    float slDistanceLong = close - lastConfirmedLowPivotPrice
+    float slDistanceShort = lastConfirmedHighPivotPrice - close
+    float appliedRrLong = useDynamicRr ? f_calc_dynamic_rr(atrValue, efficiencyRatioValue, rrHorizonBars, rrBoostFactor, rrBoostActive, slDistanceLong, rrMin, rrMax, riskRewardRatio) : riskRewardRatio
+    float appliedRrShort = useDynamicRr ? f_calc_dynamic_rr(atrValue, efficiencyRatioValue, rrHorizonBars, rrBoostFactor, rrBoostActive, slDistanceShort, rrMin, rrMax, riskRewardRatio) : riskRewardRatio
+
     bool shouldShowPivotSignalLabel = reversalSignalLabelText == "HH" or reversalSignalLabelText == "LL"
     if showSignals and reversalConfirmSignal and shouldShowPivotSignalLabel and not na(reversalConfirmSignalPrice) and str.length(reversalSignalLabelText) > 0
         float reversalLabelPrice = confirmedPivotType == PIVOT_TYPE_UP ? reversalConfirmSignalPrice + signalLabelOffsetPrice : reversalConfirmSignalPrice - signalLabelOffsetPrice
@@ -462,7 +477,7 @@ zz_run() =>
     bool canAddPosition = trade.openPositionCount < maxPyramidingCount
 
     if longEntrySignal and canAddPosition
-        f_open_position(trade, 1, false, maxPyramidingCount, useSlTp, lastConfirmedLowPivotPrice, riskRewardRatio)
+        f_open_position(trade, 1, false, maxPyramidingCount, useSlTp, lastConfirmedLowPivotPrice, appliedRrLong)
         if showEntrySignals and not na(reversalConfirmSignalPrice)
             string longEntryText = "L" + str.tostring(trade.openPositionCount)
             float longLabelPrice = reversalConfirmSignalPrice - signalLabelOffsetPrice
@@ -470,7 +485,7 @@ zz_run() =>
             f_append_signal_label_with_cap(signalLabels, longEntryLabel, maxSignalLabels)
 
     if shortEntrySignal and canAddPosition
-        f_open_position(trade, -1, false, maxPyramidingCount, useSlTp, lastConfirmedHighPivotPrice, riskRewardRatio)
+        f_open_position(trade, -1, false, maxPyramidingCount, useSlTp, lastConfirmedHighPivotPrice, appliedRrShort)
         if showEntrySignals and not na(reversalConfirmSignalPrice)
             string shortEntryText = "S" + str.tostring(trade.openPositionCount)
             float shortLabelPrice = reversalConfirmSignalPrice + signalLabelOffsetPrice
@@ -535,7 +550,7 @@ zz_run() =>
                     scanIdx := scanIdx - 1
                 bool isNewOb = na(trade.lastEntryObCreatedBar) or matchedObBar != trade.lastEntryObCreatedBar
                 if isNewOb
-                    f_open_position(trade, 1, true, maxPyramidingCount, useSlTp, lastConfirmedLowPivotPrice, riskRewardRatio)
+                    f_open_position(trade, 1, true, maxPyramidingCount, useSlTp, lastConfirmedLowPivotPrice, appliedRrLong)
                     trade.lastEntryObCreatedBar := matchedObBar
                     string longObText = "L" + str.tostring(trade.openPositionCount) + (longObPremium ? "★" : "")
                     float longObLabelPrice = low - signalLabelOffsetPrice
@@ -555,7 +570,7 @@ zz_run() =>
                     scanIdx := scanIdx - 1
                 bool isNewOb = na(trade.lastEntryObCreatedBar) or matchedObBar != trade.lastEntryObCreatedBar
                 if isNewOb
-                    f_open_position(trade, -1, true, maxPyramidingCount, useSlTp, lastConfirmedHighPivotPrice, riskRewardRatio)
+                    f_open_position(trade, -1, true, maxPyramidingCount, useSlTp, lastConfirmedHighPivotPrice, appliedRrShort)
                     trade.lastEntryObCreatedBar := matchedObBar
                     string shortObText = "S" + str.tostring(trade.openPositionCount) + (shortObPremium ? "★" : "")
                     float shortObLabelPrice = high + signalLabelOffsetPrice
@@ -564,7 +579,7 @@ zz_run() =>
 
     // HUDは1テーブルに合体。方向性とパフォーマンスは個別の表示設定に従い、両方OFFならテーブル全体を消去する
     if showHud or showPerformanceHud
-        f_render_combined_hud(hudTable, showHud, showPerformanceHud, hasStrongTrend, efficiencyRatioValue, confirmedPivotType, stats.totalTradeCount, stats.winTradeCount, stats.grossProfitTicks, stats.grossLossTicks, stats.cumulativePnlTicks, trade.positionDirection, trade.openPositionCount, maxPyramidingCount, htfTimeframe, htfBullish, htfBearish, htfErValue, useHtfFilter)
+        f_render_combined_hud(hudTable, showHud, showPerformanceHud, hasStrongTrend, efficiencyRatioValue, confirmedPivotType, stats.totalTradeCount, stats.winTradeCount, stats.grossProfitTicks, stats.grossLossTicks, stats.cumulativePnlTicks, trade.positionDirection, trade.openPositionCount, maxPyramidingCount, htfTimeframe, htfBullish, htfBearish, htfErValue, useHtfFilter, useDynamicRr, appliedRrLong, appliedRrShort, riskRewardRatio)
     else
         table.clear(hudTable, 0, 0, TABLE_LAST_COLUMN_INDEX, TABLE_LAST_ROW_INDEX)
 
