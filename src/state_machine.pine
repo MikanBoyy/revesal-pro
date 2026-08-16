@@ -406,7 +406,11 @@ zz_run() =>
         int initialLineRole = confirmedPivotType == PIVOT_TYPE_UP ? SR_ROLE_RESISTANCE : SR_ROLE_SUPPORT
         bool shouldShowHorizontalLine = reversalPivotClass == "HH" or reversalPivotClass == "LL"
         bool isRegimeCandidateLine = reversalPivotClass == "LH" or reversalPivotClass == "HL"
-        line createdHorizontalLine = line.new(confirmedPivotTime, confirmedPivotPrice, time, confirmedPivotPrice, xloc=xloc.bar_time, extend=extend.right, color=resistanceLineColor, style=line.style_solid, width=1)
+        // Why: 強トレンド即時確定では極値バー=確定バーとなりx1==x2のゼロ長ラインが生成される。
+        //      TradingViewの描画仕様上、両端点が縮退したラインはペイン全高の垂直線として表示されるため、
+        //      同一時刻の場合は右端を1バー分未来へずらして垂直表示を回避する
+        int horizontalLineEndTime = confirmedPivotTime == time ? time + int(timeframe.in_seconds() * 1000) : time
+        line createdHorizontalLine = line.new(confirmedPivotTime, confirmedPivotPrice, horizontalLineEndTime, confirmedPivotPrice, xloc=xloc.bar_time, extend=extend.right, color=resistanceLineColor, style=line.style_solid, width=1)
         f_apply_sr_line_style(createdHorizontalLine, SR_STATE_ACTIVE, initialLineRole, resistanceLineColor, supportLineColor, brokenLineColor, shouldShowHorizontalLine)
         SRLine newSRLine = SRLine.new(createdHorizontalLine, confirmedPivotPrice, initialLineRole, SR_STATE_ACTIVE, bar_index, na, false, na, na, false, na, shouldShowHorizontalLine, isRegimeCandidateLine)
         array.push(horizontalLines, newSRLine)
