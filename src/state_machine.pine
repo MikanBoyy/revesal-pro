@@ -67,7 +67,7 @@ f_find_last_opposite_candle_offset(pivotBarIndex, pivotLegStartBarIndex, searchB
 
 // @function 高安値追従型ZigZagを描画する
 // @param なし
-// @return なし
+// @return [activeLegDirection, htfBullish, htfBearish, useHtfFilter, htfVwmaPrice] barcolor と上位足VWMA描画用の状態タプル
 zz_run() =>
     int PIVOT_TYPE_NONE = 0
     int PIVOT_TYPE_UP = 1
@@ -86,11 +86,12 @@ zz_run() =>
     int REGIME_BULLISH = 1
     int REGIME_BEARISH = -1
     int TABLE_COLUMNS = 2
-    // Why: 動的RR表示行（RR行）の追加に伴い8→9へ拡張。方向性HUD=行0-4、パフォーマンスHUD=行5-8
-    int TABLE_ROWS = 9
+    // Why: エントリーロジック撤去に伴いRR行・パフォーマンス行を削除し、方向性HUD4行構成（行0-3）に縮小
+    int TABLE_ROWS = 2
     int TABLE_LAST_COLUMN_INDEX = 1
-    int TABLE_LAST_ROW_INDEX = 8
-    int SIGNAL_LABEL_BG_ALPHA = 86
+    int TABLE_LAST_ROW_INDEX = 1
+    // Why: ラベル背景は濃いめ（透明度25）に固定し、白文字のコントラストを確保する。旧86は背景がほぼ透明で文字がかすんでいた
+    int SIGNAL_LABEL_BG_ALPHA = 25
     float SIGNAL_LABEL_OFFSET_ATR_MULTIPLIER = 0.35
     int SIGNAL_LABEL_ATR_PERIOD = 14
     string SR_CONFIRM_MODE_FIRST_EXTREME = "足1極値更新"
@@ -100,67 +101,77 @@ zz_run() =>
     string OB_EXTEND_MODE_STOP_AT_TOUCH_LIMIT = "N回接触で延長停止"
     string OB_EXPIRY_ACTION_DELETE = "削除"
     string OB_EXPIRY_ACTION_DOTTED = "点線化して残す"
-    color HIGH_SIDE_LABEL_COLOR = #20a35a
-    color LOW_SIDE_LABEL_COLOR = #d45555
-    color REVERSAL_LINE_COLOR_DEFAULT = #9932CC
-    color REVERSAL_LABEL_PREMIUM_COLOR = #7A1CAC
-    color REVERSAL_LABEL_NORMAL_COLOR = #8E63CE
+    // Why: 色相の役割分担を明確化する。緑=上昇/強気、赤=下降/弱気、紫=レジーム転換専用。
+    //      TradingView慣例の落ち着いた色相（#26A69A/#EF5350）に統一し、旧lime/redの彩度過剰によるOB・ラベルとの同化を解消する
+    color HIGH_SIDE_LABEL_COLOR = #26A69A
+    color LOW_SIDE_LABEL_COLOR = #EF5350
+    // Why: 転換ラインとTCラベルを同色の紫に揃え、「レジーム転換=紫」の視覚的一貫性を持たせる。
+    //      旧 #9932CC は暗背景で沈むため、明るい #BA68C8 を採用する
+    color REVERSAL_LINE_COLOR_DEFAULT = #BA68C8
+    // Why: TCラベルは方向色（紺/赤）を廃止して紫に統一する。方向はラベルのポインタ形状で表現するため色には持たせない
+    color TC_LABEL_COLOR = REVERSAL_LINE_COLOR_DEFAULT
 
     int atrPeriod = input.int(14, "ATR期間", minval=1, tooltip="動的反転閾値の基準となるATR期間")
     float atrMultiplier = input.float(1.8, "ATR乗数k", minval=0.1, step=0.1, tooltip="反転閾値の基礎係数（反転閾値 = (k×ATR)×(0.6+ER×0.8)）")
     int erPeriod = input.int(20, "ER期間", minval=2, tooltip="Efficiency Ratioを算出する期間")
     float erThreshold = input.float(0.45, "ER強弱閾値", minval=0.0, maxval=1.0, step=0.01, tooltip="ERがこの値以上なら1本抜け即時確定")
-    color resistanceLineColor = input.color(color.new(#b97f01, 0), "Res_Color", tooltip="レジスタンスライン（有効）の色")
-    color supportLineColor = input.color(color.new(#0d91dd, 0), "Sup_Color", tooltip="サポートライン（有効）の色")
-    color brokenLineColor = input.color(color.new(color.gray, 0), "Broken_Line_Color", tooltip="完全に破壊されたラインの色")
+    // Why: 色はユーザー可変にせずブランド統一のため固定色とする（旧input.colorのデフォルト値を採用）
+    // レジスタンスライン（有効）の色
+    // Why: 旧 #b97f01 は暗くダークテーマで沈んでいたため、明るい琥珀色 #F2A93B に変更する
+    color resistanceLineColor = color.new(#F2A93B, 0)
+    // サポートライン（有効）の色
+    // Why: 旧 #0d91dd はTC紺（#2962FF）と色相が近く紛らわしかったため、明るい水色 #29B6F6 に変更する
+    color supportLineColor = color.new(#29B6F6, 0)
+    // 完全に破壊されたラインの色
+    // Why: 点線化に加えて透明度55で減光させ、「過去の遺物」であることを一瞥で伝える
+    color brokenLineColor = color.new(color.gray, 55)
     int maxHorizontalLinesCount = input.int(50, "Max_Lines_Count", minval=10, maxval=400, tooltip="チャート上に保持する最大水平ライン数")
     int expiryBarsAfterBreak = input.int(100, "Expiry_Bars_After_Break", minval=1, maxval=2000, tooltip="Broken後に何本でラインを削除するか")
-    bool showHud = input.bool(true, "HUDを表示", tooltip="ER、確定モード、反転閾値、最新確定方向を表示")
+    bool showHud = input.bool(true, "HUDを表示", tooltip="執行足と上位足の方向・ER熱度を表示")
     bool showSignals = input.bool(true, "シグナルを表示", tooltip="確定反転シグナルを表示")
     int maxSignalLabels = input.int(120, "シグナル保持本数", minval=20, maxval=300, tooltip="古いシグナルラベルは自動削除")
     int maxLines = input.int(300, "表示ライン本数", minval=50, maxval=500, tooltip="古いZigZagラインは自動削除")
     bool showRealtimeLeg = input.bool(true, "未確定レッグを表示", tooltip="最後の確定ピボットから現在の暫定極値への点線を表示")
     bool useBodyForPivotDetection = input.bool(false, "ZigZag判定を実体ベースにする", tooltip="ONでopen/close、OFFでhigh/lowを使って極値判定します")
-    string srSecondBreakConfirmMode = input.string(SR_CONFIRM_MODE_LINE_PRICE, "レジサポ2本目確定条件", options=[SR_CONFIRM_MODE_LINE_PRICE, SR_CONFIRM_MODE_FIRST_EXTREME], tooltip="ライン価格維持: 足2終値がライン外側を維持で確定 / 足1極値更新: 足2終値が足1高安を更新で確定")
+    // Why: 2本目確定条件は「ライン価格維持」に固定。サポートの取りこぼし防止を優先し、ユーザー設定は廃止する
+    string srSecondBreakConfirmMode = SR_CONFIRM_MODE_LINE_PRICE
     bool showCoreTimeFvg = input.bool(false, "コアタイムFVGを表示", tooltip="日本時間コアタイム内に発生したFVGのみを描画します")
     int maxCoreTimeFvgBoxes = input.int(80, "コアタイムFVG保持数", minval=10, maxval=300, tooltip="古いFVGボックスは自動削除")
-    color bullishCoreFvgColor = input.color(color.new(#1f9d55, 80), "上昇FVG色", tooltip="Low > High[2] の不均衡を描画する色")
-    color bearishCoreFvgColor = input.color(color.new(#cc3d3d, 80), "下降FVG色", tooltip="High < Low[2] の不均衡を描画する色")
+    // Low > High[2] の不均衡（上昇FVG）を描画する色
+    // Why: 上昇/強気の統一色 #26A69A 系。OBより透明度を高く（80）保ち、重なった際にOBを主役として認識させる
+    color bullishCoreFvgColor = color.new(#26A69A, 80)
+    // High < Low[2] の不均衡（下降FVG）を描画する色
+    // Why: 下降/弱気の統一色 #EF5350 系。上昇FVGと同じ透明度設計とする
+    color bearishCoreFvgColor = color.new(#EF5350, 80)
     bool showOB = input.bool(true, "OBを表示", tooltip="オーダーブロック機能全体の表示/非表示")
     string obSourceMode = input.string("ヒゲを含む", "OB境界モード", options=["ヒゲを含む", "実体のみ"], tooltip="OBの境界をヒゲベースにするか実体ベースにするか")
     int maxObBoxesCount = input.int(40, "OB保持数", minval=10, maxval=100, tooltip="チャート上に保持するOBボックスの最大数")
-    color bullishObColor = input.color(#1f9d55, "通常強気OB色", tooltip="通常の強気OBの描画色")
-    color bearishObColor = input.color(#cc3d3d, "通常弱気OB色", tooltip="通常の弱気OBの描画色")
-    color premiumObColor = input.color(#7A1CAC, "Premium OB色", tooltip="機関性裏付けのあるPremium OBの描画色")
+    // 通常の強気OBの描画色
+    // Why: 上昇/強気の統一色 #26A69A。HHラベル・レッグと同系だが、ボックスの透明度と枠線で役割を区別する
+    color bullishObColor = #26A69A
+    // 通常の弱気OBの描画色
+    // Why: 下降/弱気の統一色 #EF5350
+    color bearishObColor = #EF5350
+    // 機関性裏付けのあるPremium OBの描画色
+    // Why: 旧 #7A1CAC は転換ライン紫と近接し「転換」と「Premium OB」の区別がつかなかったため、琥珀系 #FF9800 に変更する
+    color premiumObColor = #FF9800
     int obAlphaActive = input.int(70, "OB透明度（有効時）", minval=0, maxval=100, tooltip="アクティブなOBの背景透明度")
     int obAlphaMitigated = input.int(75, "OB透明度（吸収済）", minval=0, maxval=100, tooltip="吸収済OBの背景透明度")
     string obExtendMode = input.string(OB_EXTEND_MODE_BROKEN_UNTIL, "OB延長モード", options=[OB_EXTEND_MODE_BROKEN_UNTIL, OB_EXTEND_MODE_STOP_AT_FIRST_MITIGATION, OB_EXTEND_MODE_STOP_AT_TOUCH_LIMIT], tooltip="Balanced推奨: Brokenまで延長。必要に応じて接触基準で停止に切替できます")
     int obMitigationTouchLimit = input.int(1, "OB延長停止の接触回数", minval=1, maxval=10, tooltip="延長モードがN回接触で延長停止の場合に使用します")
     int obMaxAgeBars = input.int(600, "OB寿命（バー数）", minval=10, maxval=2000, tooltip="作成から指定バー経過後は寿命切れとして処理します")
     string obExpiryAction = input.string(OB_EXPIRY_ACTION_DELETE, "OB寿命到達時の処理", options=[OB_EXPIRY_ACTION_DELETE, OB_EXPIRY_ACTION_DOTTED], tooltip="寿命経過後に削除するか、点線化して残すかを選択します")
-    color reversalLineColor = input.color(color.new(REVERSAL_LINE_COLOR_DEFAULT, 0), "転換ライン色", tooltip="転換確定ラインを強調表示する色")
+    // 転換確定ラインを強調表示する色
+    color reversalLineColor = color.new(REVERSAL_LINE_COLOR_DEFAULT, 0)
     int reversalLineWidth = input.int(2, "転換ライン太さ", minval=2, maxval=5, tooltip="転換確定時のライン太さ")
     int maxReversalLinesCount = input.int(40, "転換ライン保持本数", minval=30, maxval=50, tooltip="レジーム転換専用ラインの最大保持本数（古い順に削除）")
-    color upColor = input.color(color.new(color.lime, 0), "上昇レッグ色")
-    color downColor = input.color(color.new(color.red, 0), "下降レッグ色")
+    // ZigZagの上昇レッグ・下降レッグの色
+    // Why: 彩度の高いlime/redはOB・ラベルの緑/赤と同化して階層が崩れていたため、落ち着いた #26A69A/#EF5350 に統一する
+    color upColor = color.new(#26A69A, 0)
+    color downColor = color.new(#EF5350, 0)
     int lineWidth = input.int(4, "ライン幅", minval=1, maxval=4)
-    bool showEntrySignals = input.bool(true, "エントリーサインを表示", tooltip="HL/LH確定とレジーム一致に基づくエントリーサインを表示します")
-    int maxPyramidingCount = input.int(5, "最大ピラミッティング数", minval=1, maxval=10, tooltip="同方向に追加可能な最大ポジション数")
-    bool showObRetestEntry = input.bool(true, "OBリテストエントリーを有効化", tooltip="レジーム一致のOBゾーン内で反発確定した場合にエントリーサインを表示します")
-    color longSignalColor = input.color(#2962FF, "ロングサイン色", tooltip="ロングエントリー・全決済サインの色")
-    color shortSignalColor = input.color(#FF3B30, "ショートサイン色", tooltip="ショートエントリー・全決済サインの色")
-    bool showPerformanceHud = input.bool(true, "パフォーマンスHUDを表示", tooltip="疑似トレード成績（トレード数/勝率/PF/累積損益/保有状況）を左中央に表示します")
-    bool useHtfFilter = input.bool(true, "上位足フィルタを有効化", tooltip="上位足のトレンド方向と一致するエントリーのみ許可します")
-    bool useSlTp = input.bool(true, "SL/TPを有効化", tooltip="SL=直近ピボット、TP=SL幅×RR比で疑似決済します。OFFでレジーム転換のみの決済に戻ります")
-    float riskRewardRatio = input.float(2.0, "リスクリワード比（RR）", minval=0.5, maxval=10.0, step=0.5, tooltip="TP = SL幅 × RR比。損小利大にするため1.5以上を推奨。動的RR有効時は計算不能局面のフォールバックとして使用")
-    // 動的RR: ATR・ER・ホライズンから期待変動幅（伸びしろ）を推定し、SL距離で割ってRRを算出する
-    bool useDynamicRr = input.bool(true, "動的RRを有効化", tooltip="ATR×ホライズン×(0.5+ER)×ブースト係数 を期待変動幅とし、SL距離で割ってRRを動的に決定します。OFFで上記の固定RRに戻ります")
-    int rrHorizonBars = input.int(5, "RRホライズン（バー）", minval=1, maxval=50, tooltip="期待変動幅 = ATR × ホライズン × (0.5+ER) × ブースト係数。何バー先までの伸びを見込むか")
-    float rrMin = input.float(1.0, "動的RR下限", minval=0.5, maxval=10.0, step=0.1, tooltip="動的RRの下限クランプ。SL距離が大きい局面でRRが過小になるのを防ぎます")
-    float rrMax = input.float(5.0, "動的RR上限", minval=0.5, maxval=20.0, step=0.1, tooltip="動的RRの上限クランプ。SL距離が極小の局面で実現性の低い過大RRになるのを防ぎます")
-    float rrBoostFactor = input.float(1.15, "RRブースト係数", minval=1.0, maxval=2.0, step=0.05, tooltip="強トレンド or コアタイム時に期待変動幅へ掛ける乗数。伸びしろ予測を強気方向へ補正します")
-    bool useTrailingStop = input.bool(true, "トレーリングストップを有効化", tooltip="含み益が伸びたらSLを引き上げ（ロング）/引き下げ（ショート）て利益を保護します")
-    float trailingActivationRr = input.float(1.0, "トレーリング開始（RR倍数）", minval=0.5, maxval=5.0, step=0.5, tooltip="含み益がSL幅×この倍数に達したらトレーリング開始")
+    // Why: エントリー撤去後はフィルタとしての機能を持たず、HUD上位足行の表示切替としてのみ使用する
+    bool useHtfFilter = input.bool(true, "上位足トレンドを表示", tooltip="上位足の時間軸・方向・ERをHUDに表示します")
 
     float atrValue = ta.atr(atrPeriod)
     float efficiencyRatioValue = f_calc_efficiency_ratio(close, erPeriod)
@@ -180,16 +191,12 @@ zz_run() =>
     int barsSinceCoreTimeFvg = ta.barssince(barHasCoreTimeFvg)
     bool hasCoreTimeFvgWithin3Bars = not na(barsSinceCoreTimeFvg) and barsSinceCoreTimeFvg <= 3
 
-    // 上位足フィルタ用。lookahead_offで確定値のみ参照しリペイントを抑止する
-    // Why: ③符号付きER化は単体でPFを悪化させたため撤去し、ER（強度）とclose対SMA（方向）の併用による元方式に戻す
+    // 上位足トレンド情報（HUD表示用）。lookahead_offで確定値のみ参照しリペイントを抑止する
+    // Why: 出来高加重でダマシを減らすため SMA から VWMA に置き換える。期間は erPeriod(20) を流用する
     string htfTimeframe = f_get_htf_timeframe()
-    [htfErValue, htfClosePrice, htfSmaPrice] = request.security(syminfo.tickerid, htfTimeframe, [f_calc_efficiency_ratio(close, erPeriod), close, ta.sma(close, erPeriod)], lookahead=barmerge.lookahead_off)
-    bool htfBullish = htfErValue >= erThreshold and htfClosePrice > htfSmaPrice
-    bool htfBearish = htfErValue >= erThreshold and htfClosePrice < htfSmaPrice
-    // Why: 上位足中立（ER未達で方向不定）時にフィルタが両方向を遮断しエントリーが枯渇するため、中立時はフィルタを素通しにしてトレード回数を担保する
-    bool htfIsNeutral = not htfBullish and not htfBearish
-    bool htfFilterAllowsLong = not useHtfFilter or htfBullish or htfIsNeutral
-    bool htfFilterAllowsShort = not useHtfFilter or htfBearish or htfIsNeutral
+    [htfErValue, htfClosePrice, htfVwmaPrice] = request.security(syminfo.tickerid, htfTimeframe, [f_calc_efficiency_ratio(close, erPeriod), close, ta.vwma(close, erPeriod)], lookahead=barmerge.lookahead_off)
+    bool htfBullish = htfErValue >= erThreshold and htfClosePrice > htfVwmaPrice
+    bool htfBearish = htfErValue >= erThreshold and htfClosePrice < htfVwmaPrice
 
     var int confirmedPivotType = PIVOT_TYPE_NONE
     var float confirmedPivotPrice = na
@@ -218,13 +225,7 @@ zz_run() =>
     var array<box> coreTimeFvgBoxes = array.new<box>()
     var array<OrderBlock> activeOBs = array.new<OrderBlock>()
     var bool institutionalSignalActive = false
-    var float lastTargetHL = na
-    var float lastTargetLH = na
     var int currentRegime = REGIME_UNKNOWN
-
-    // 疑似トレード状態と統計をUDTに集約（trade_engine.pine）。損益は平均建値方式で集計する
-    var TradeState trade = TradeState.new(0, 0, 0.0, 0, 0, na, na, na)
-    var TradeStats stats = TradeStats.new(0, 0, 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0)
 
     bool reversalConfirmSignal = false
     float reversalConfirmSignalPrice = na
@@ -297,7 +298,8 @@ zz_run() =>
                         float bearishTopPrice = high[bearishAnchorOffset]
                         float bearishBottomPrice = obSourceMode == "実体のみ" ? math.min(open[bearishAnchorOffset], close[bearishAnchorOffset]) : low[bearishAnchorOffset]
                         color bearishBaseColor = bearishObIsPremium ? premiumObColor : bearishObColor
-                        box bearishObBox = box.new(bearishAnchorBar, bearishTopPrice, bar_index, bearishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bearishBaseColor, obAlphaActive), border_width=0)
+                        // Why: 実線枠を付けてゾーン輪郭を明確化する。背景透明度だけではローソク足に埋もれて輪郭が曖昧だった
+                        box bearishObBox = box.new(bearishAnchorBar, bearishTopPrice, bar_index, bearishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bearishBaseColor, obAlphaActive), border_width=1, border_color=color.new(bearishBaseColor, 0))
                         OrderBlock bearishOrderBlock = OrderBlock.new(bearishObBox, bearishTopPrice, bearishBottomPrice, OB_DIRECTION_BEARISH, bearishObIsPremium, bearishAnchorBar, OB_STATE_ACTIVE, efficiencyRatioValue, 0, false, false)
                         array.push(activeOBs, bearishOrderBlock)
                         f_trim_order_blocks_with_cap(activeOBs, maxObBoxesCount)
@@ -310,8 +312,6 @@ zz_run() =>
             reversalSignalLabelText := isHigherHigh ? "HH" : "LH"
             reversalPivotClass := reversalSignalLabelText
             reversalSignalLabelColor := str.substring(reversalSignalLabelText, 0, 1) == "H" ? HIGH_SIDE_LABEL_COLOR : LOW_SIDE_LABEL_COLOR
-            if reversalSignalLabelText == "LH"
-                lastTargetLH := legExtremePrice
             lastConfirmedHighPivotPrice := legExtremePrice
             lastConfirmedHighPivotBarIndex := legExtremeBarIndex
             lastConfirmedHighLegStartBarIndex := legStartPivotBarIndex
@@ -359,7 +359,8 @@ zz_run() =>
                         float bullishTopPrice = obSourceMode == "実体のみ" ? math.max(open[bullishAnchorOffset], close[bullishAnchorOffset]) : high[bullishAnchorOffset]
                         float bullishBottomPrice = low[bullishAnchorOffset]
                         color bullishBaseColor = bullishObIsPremium ? premiumObColor : bullishObColor
-                        box bullishObBox = box.new(bullishAnchorBar, bullishTopPrice, bar_index, bullishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bullishBaseColor, obAlphaActive), border_width=0)
+                        // Why: 実線枠を付けてゾーン輪郭を明確化する。背景透明度だけではローソク足に埋もれて輪郭が曖昧だった
+                        box bullishObBox = box.new(bullishAnchorBar, bullishTopPrice, bar_index, bullishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bullishBaseColor, obAlphaActive), border_width=1, border_color=color.new(bullishBaseColor, 0))
                         OrderBlock bullishOrderBlock = OrderBlock.new(bullishObBox, bullishTopPrice, bullishBottomPrice, OB_DIRECTION_BULLISH, bullishObIsPremium, bullishAnchorBar, OB_STATE_ACTIVE, efficiencyRatioValue, 0, false, false)
                         array.push(activeOBs, bullishOrderBlock)
                         f_trim_order_blocks_with_cap(activeOBs, maxObBoxesCount)
@@ -372,8 +373,6 @@ zz_run() =>
             reversalSignalLabelText := isLowerLow ? "LL" : "HL"
             reversalPivotClass := reversalSignalLabelText
             reversalSignalLabelColor := str.substring(reversalSignalLabelText, 0, 1) == "H" ? HIGH_SIDE_LABEL_COLOR : LOW_SIDE_LABEL_COLOR
-            if reversalSignalLabelText == "HL"
-                lastTargetHL := legExtremePrice
             lastConfirmedLowPivotPrice := legExtremePrice
             lastConfirmedLowPivotBarIndex := legExtremeBarIndex
             lastConfirmedLowLegStartBarIndex := legStartPivotBarIndex
@@ -388,18 +387,13 @@ zz_run() =>
             breakConfirmationCount := 0
             institutionalSignalActive := false
 
-    // Why: SL基準は方向ごとの確定ピボットを使うため、動的RRも方向別に事前算出する。
-    //      エントリー4箇所で同一式を重複記述すると、保守時に片方だけ修正する事故を招く
-    bool rrBoostActive = isCoreTime or hasStrongTrend
-    float slDistanceLong = close - lastConfirmedLowPivotPrice
-    float slDistanceShort = lastConfirmedHighPivotPrice - close
-    float appliedRrLong = useDynamicRr ? f_calc_dynamic_rr(atrValue, efficiencyRatioValue, rrHorizonBars, rrBoostFactor, rrBoostActive, slDistanceLong, rrMin, rrMax, riskRewardRatio) : riskRewardRatio
-    float appliedRrShort = useDynamicRr ? f_calc_dynamic_rr(atrValue, efficiencyRatioValue, rrHorizonBars, rrBoostFactor, rrBoostActive, slDistanceShort, rrMin, rrMax, riskRewardRatio) : riskRewardRatio
-
     bool shouldShowPivotSignalLabel = reversalSignalLabelText == "HH" or reversalSignalLabelText == "LL"
     if showSignals and reversalConfirmSignal and shouldShowPivotSignalLabel and not na(reversalConfirmSignalPrice) and str.length(reversalSignalLabelText) > 0
         float reversalLabelPrice = confirmedPivotType == PIVOT_TYPE_UP ? reversalConfirmSignalPrice + signalLabelOffsetPrice : reversalConfirmSignalPrice - signalLabelOffsetPrice
-        label reversalLabel = label.new(reversalConfirmSignalTime, reversalLabelPrice, reversalSignalLabelText, xloc=xloc.bar_time, style=label.style_label_left, textcolor=color.new(reversalSignalLabelColor, 0), color=color.new(reversalSignalLabelColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
+        // Why: ポインタ形状（label_down/label_up）でピボット位置を直接指し示させ、label_left の横並び配置による密集時の可読性低下を解消する
+        string pivotLabelStyle = confirmedPivotType == PIVOT_TYPE_UP ? label.style_label_down : label.style_label_up
+        // Why: HH/LLは頻出するためTCより一段小さいsize.smallとし、重要度の視覚的ヒエラルキーを作る
+        label reversalLabel = label.new(reversalConfirmSignalTime, reversalLabelPrice, reversalSignalLabelText, xloc=xloc.bar_time, style=pivotLabelStyle, textcolor=color.white, color=color.new(reversalSignalLabelColor, SIGNAL_LABEL_BG_ALPHA), size=size.small)
         f_append_signal_label_with_cap(signalLabels, reversalLabel, maxSignalLabels)
 
     if reversalConfirmSignal and not na(confirmedPivotPrice) and not na(confirmedPivotTime)
@@ -426,77 +420,13 @@ zz_run() =>
     regimeShiftSignalTime := regimeShiftTimeValue
     currentRegime := nextRegimeState
 
-    // エントリー評価ブロック。全決済を先に評価し、同バー再エントリーを抑止する
-    // Why: 帳簿（統計・建値）は表示設定に関わらず常時更新し、ラベル描画のみ showEntrySignals で制御する。HUDと帳簿の不整合を防ぐため
-    bool exitThisBar = false
-
-    // トレーリングストップ更新。含み益がSL幅×trailingActivationRrに達したらSLを建値方向へ引き上げ/引き下げて利益を保護する
-    // Why: TP到達前の急反転で含み益を失うのを防ぐ。SLは不利方向には動かさない（ロングは上のみ、ショートは下のみ）
-    if useSlTp and useTrailingStop and trade.positionDirection != 0 and trade.openPositionCount > 0 and not na(trade.slPrice) and not na(trade.tpPrice)
-        float averageEntryPriceForTrail = trade.entryPriceSum / trade.openPositionCount
-        float riskWidth = trade.positionDirection == 1 ? averageEntryPriceForTrail - trade.slPrice : trade.slPrice - averageEntryPriceForTrail
-        if riskWidth > 0
-            float unrealizedPnl = trade.positionDirection == 1 ? close - averageEntryPriceForTrail : averageEntryPriceForTrail - close
-            bool trailActivated = unrealizedPnl >= riskWidth * trailingActivationRr
-            if trailActivated
-                // 含み益分の一部をロックするため、SLを建値+（含み益-1R分）方向へ移動
-                float newSlCandidate = trade.positionDirection == 1 ? averageEntryPriceForTrail + (unrealizedPnl - riskWidth) : averageEntryPriceForTrail - (unrealizedPnl - riskWidth)
-                if trade.positionDirection == 1 and newSlCandidate > trade.slPrice
-                    trade.slPrice := newSlCandidate
-                if trade.positionDirection == -1 and newSlCandidate < trade.slPrice
-                    trade.slPrice := newSlCandidate
-
-    // SL/TP決済（バー内タッチ）。レジーム転換決済より先に評価し、バー内で先に発生し得る保守的な価格を優先する
-    // Why: 同一バーでSL/TP両タッチの場合はSL優先（保守的仮定）。疑似約定価格はSL/TPの指値とする
-    if useSlTp and trade.positionDirection != 0 and trade.openPositionCount > 0 and not na(trade.slPrice) and not na(trade.tpPrice)
-        bool hitSl = trade.positionDirection == 1 ? low <= trade.slPrice : high >= trade.slPrice
-        bool hitTp = trade.positionDirection == 1 ? high >= trade.tpPrice : low <= trade.tpPrice
-        if hitSl or hitTp
-            float exitPrice = hitSl ? trade.slPrice : trade.tpPrice
-            string exitReason = hitSl ? "SL" : "TP"
-            if showEntrySignals
-                color exitColor = trade.positionDirection == 1 ? longSignalColor : shortSignalColor
-                float exitLabelPrice = trade.positionDirection == 1 ? low - signalLabelOffsetPrice : high + signalLabelOffsetPrice
-                label slTpLabel = label.new(time, exitLabelPrice, exitReason, xloc=xloc.bar_time, style=trade.positionDirection == 1 ? label.style_label_up : label.style_label_down, textcolor=exitColor, color=color.new(exitColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
-                f_append_signal_label_with_cap(signalLabels, slTpLabel, maxSignalLabels)
-            f_close_all_positions(trade, stats, exitPrice)
-            exitThisBar := true
-
-    bool isPositionReversedByShift = regimeShiftConfirmedSignal and trade.positionDirection != 0 and ((trade.positionDirection == 1 and not regimeShiftIsBullish) or (trade.positionDirection == -1 and regimeShiftIsBullish))
-    // Why: TC色の判定には決済前の保有状態が必要なため、リセット前に捕捉する
-    bool hadPositionBeforeShift = isPositionReversedByShift
-    if isPositionReversedByShift
-        // 疑似約定: エントリー/決済とも確定バー終値、損益はティック換算（銘柄間で比較可能にするため）
-        f_close_all_positions(trade, stats, close)
-        exitThisBar := true
-
-    // レジーム転換の目印はポジション有無と切り離して常時表示する。保有時は全決済を兼ねるため保有方向色、非保有時は転換方向色とする
-    if showEntrySignals and regimeShiftConfirmedSignal and not na(regimeShiftSignalPrice)
-        color tcLabelColor = hadPositionBeforeShift ? (regimeShiftIsBullish ? shortSignalColor : longSignalColor) : (regimeShiftIsBullish ? longSignalColor : shortSignalColor)
-        label tcLabel = label.new(time, regimeShiftSignalPrice, "TC", xloc=xloc.bar_time, style=label.style_label_left, textcolor=tcLabelColor, color=color.new(tcLabelColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
+    // レジーム転換（TC）の目印を転換ラインと同色の紫で常時表示する
+    if showSignals and regimeShiftConfirmedSignal and not na(regimeShiftSignalPrice)
+        // Why: TCラベルは転換ライン（紫）と同色に統一し、方向はポインタ形状（強気転換=label_up/弱気転換=label_down）で表現する。
+        //      旧来の紺/赤は暗背景で沈み、下降転換の赤がLLラベルの赤と近似して誤認を招いていたため廃止する
+        string tcLabelStyle = regimeShiftIsBullish ? label.style_label_up : label.style_label_down
+        label tcLabel = label.new(time, regimeShiftSignalPrice, "TC", xloc=xloc.bar_time, style=tcLabelStyle, textcolor=color.white, color=color.new(TC_LABEL_COLOR, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
         f_append_signal_label_with_cap(signalLabels, tcLabel, maxSignalLabels)
-
-    // Why: 執行足が中立（ER < 閾値）の局面はレンジ・ノイズが支配的で、Aモードのレジーム追随エントリーは
-    //      だましを拾いやすいため、強トレンド時のみ許可する。Bモード（OBリテスト）は別条件で担保するため対象外
-    bool longEntrySignal = reversalConfirmSignal and reversalPivotClass == "HL" and currentRegime == REGIME_BULLISH and trade.positionDirection >= 0 and not exitThisBar and htfFilterAllowsLong and hasStrongTrend
-    bool shortEntrySignal = reversalConfirmSignal and reversalPivotClass == "LH" and currentRegime == REGIME_BEARISH and trade.positionDirection <= 0 and not exitThisBar and htfFilterAllowsShort and hasStrongTrend
-    bool canAddPosition = trade.openPositionCount < maxPyramidingCount
-
-    if longEntrySignal and canAddPosition
-        f_open_position(trade, 1, false, maxPyramidingCount, useSlTp, lastConfirmedLowPivotPrice, appliedRrLong)
-        if showEntrySignals and not na(reversalConfirmSignalPrice)
-            string longEntryText = "L" + str.tostring(trade.openPositionCount)
-            float longLabelPrice = reversalConfirmSignalPrice - signalLabelOffsetPrice
-            label longEntryLabel = label.new(time, longLabelPrice, longEntryText, xloc=xloc.bar_time, style=label.style_label_up, textcolor=longSignalColor, color=color.new(longSignalColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
-            f_append_signal_label_with_cap(signalLabels, longEntryLabel, maxSignalLabels)
-
-    if shortEntrySignal and canAddPosition
-        f_open_position(trade, -1, false, maxPyramidingCount, useSlTp, lastConfirmedHighPivotPrice, appliedRrShort)
-        if showEntrySignals and not na(reversalConfirmSignalPrice)
-            string shortEntryText = "S" + str.tostring(trade.openPositionCount)
-            float shortLabelPrice = reversalConfirmSignalPrice + signalLabelOffsetPrice
-            label shortEntryLabel = label.new(time, shortLabelPrice, shortEntryText, xloc=xloc.bar_time, style=label.style_label_down, textcolor=shortSignalColor, color=color.new(shortSignalColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
-            f_append_signal_label_with_cap(signalLabels, shortEntryLabel, maxSignalLabels)
 
     createBullishObFromRegimeShift := regimeShiftConfirmedSignal and regimeShiftIsBullish
     createBearishObFromRegimeShift := regimeShiftConfirmedSignal and not regimeShiftIsBullish
@@ -512,7 +442,8 @@ zz_run() =>
                 float bullishTopPrice = obSourceMode == "実体のみ" ? math.max(open[bullishAnchorOffset], close[bullishAnchorOffset]) : high[bullishAnchorOffset]
                 float bullishBottomPrice = low[bullishAnchorOffset]
                 color bullishBaseColor = bullishObIsPremium ? premiumObColor : bullishObColor
-                box bullishObBox = box.new(bullishAnchorBar, bullishTopPrice, bar_index, bullishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bullishBaseColor, obAlphaActive), border_width=0)
+                // Why: 実線枠を付けてゾーン輪郭を明確化する。背景透明度だけではローソク足に埋もれて輪郭が曖昧だった
+                box bullishObBox = box.new(bullishAnchorBar, bullishTopPrice, bar_index, bullishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bullishBaseColor, obAlphaActive), border_width=1, border_color=color.new(bullishBaseColor, 0))
                 OrderBlock bullishOrderBlock = OrderBlock.new(bullishObBox, bullishTopPrice, bullishBottomPrice, OB_DIRECTION_BULLISH, bullishObIsPremium, bullishAnchorBar, OB_STATE_ACTIVE, efficiencyRatioValue, 0, false, false)
                 array.push(activeOBs, bullishOrderBlock)
                 f_trim_order_blocks_with_cap(activeOBs, maxObBoxesCount)
@@ -528,7 +459,8 @@ zz_run() =>
                 float bearishTopPrice = high[bearishAnchorOffset]
                 float bearishBottomPrice = obSourceMode == "実体のみ" ? math.min(open[bearishAnchorOffset], close[bearishAnchorOffset]) : low[bearishAnchorOffset]
                 color bearishBaseColor = bearishObIsPremium ? premiumObColor : bearishObColor
-                box bearishObBox = box.new(bearishAnchorBar, bearishTopPrice, bar_index, bearishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bearishBaseColor, obAlphaActive), border_width=0)
+                // Why: 実線枠を付けてゾーン輪郭を明確化する。背景透明度だけではローソク足に埋もれて輪郭が曖昧だった
+                box bearishObBox = box.new(bearishAnchorBar, bearishTopPrice, bar_index, bearishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bearishBaseColor, obAlphaActive), border_width=1, border_color=color.new(bearishBaseColor, 0))
                 OrderBlock bearishOrderBlock = OrderBlock.new(bearishObBox, bearishTopPrice, bearishBottomPrice, OB_DIRECTION_BEARISH, bearishObIsPremium, bearishAnchorBar, OB_STATE_ACTIVE, efficiencyRatioValue, 0, false, false)
                 array.push(activeOBs, bearishOrderBlock)
                 f_trim_order_blocks_with_cap(activeOBs, maxObBoxesCount)
@@ -539,53 +471,9 @@ zz_run() =>
         while array.size(activeOBs) > 0
             f_delete_order_block_at(activeOBs, 0)
 
-    // Bモード: OBリテストの反発確認エントリー。OB状態更新後に評価し、Aモード未発動かつ同方向レジームの場合のみ追加する
-    // Why: エントリー価格はAモードと同様に確定バー終値で計上し、帳簿の一貫性を保つ。同一OBでの連続エントリーは trade.lastEntryObCreatedBar で抑止する
-    bool canAddObPosition = trade.openPositionCount < maxPyramidingCount and not exitThisBar
-    if showEntrySignals and showObRetestEntry and canAddObPosition
-        bool hasLongObContext = not (longEntrySignal and canAddPosition) and currentRegime == REGIME_BULLISH and trade.positionDirection >= 0 and htfFilterAllowsLong
-        if hasLongObContext
-            [longObConfirmed, longObPremium] = f_check_ob_reversal_confirmation(activeOBs, OB_DIRECTION_BULLISH)
-            if longObConfirmed
-                int matchedObBar = na
-                int scanIdx = array.size(activeOBs) - 1
-                while scanIdx >= 0 and na(matchedObBar)
-                    OrderBlock probeOb = array.get(activeOBs, scanIdx)
-                    if probeOb.direction == OB_DIRECTION_BULLISH and low <= probeOb.topPrice and high >= probeOb.bottomPrice and close > open and close > probeOb.bottomPrice
-                        matchedObBar := probeOb.createdBar
-                    scanIdx := scanIdx - 1
-                bool isNewOb = na(trade.lastEntryObCreatedBar) or matchedObBar != trade.lastEntryObCreatedBar
-                if isNewOb
-                    f_open_position(trade, 1, true, maxPyramidingCount, useSlTp, lastConfirmedLowPivotPrice, appliedRrLong)
-                    trade.lastEntryObCreatedBar := matchedObBar
-                    string longObText = "L" + str.tostring(trade.openPositionCount) + (longObPremium ? "★" : "")
-                    float longObLabelPrice = low - signalLabelOffsetPrice
-                    label longObLabel = label.new(time, longObLabelPrice, longObText, xloc=xloc.bar_time, style=label.style_label_up, textcolor=longSignalColor, color=color.new(longSignalColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
-                    f_append_signal_label_with_cap(signalLabels, longObLabel, maxSignalLabels)
-
-        bool hasShortObContext = not (shortEntrySignal and canAddPosition) and currentRegime == REGIME_BEARISH and trade.positionDirection <= 0 and htfFilterAllowsShort
-        if hasShortObContext
-            [shortObConfirmed, shortObPremium] = f_check_ob_reversal_confirmation(activeOBs, OB_DIRECTION_BEARISH)
-            if shortObConfirmed
-                int matchedObBar = na
-                int scanIdx = array.size(activeOBs) - 1
-                while scanIdx >= 0 and na(matchedObBar)
-                    OrderBlock probeOb = array.get(activeOBs, scanIdx)
-                    if probeOb.direction == OB_DIRECTION_BEARISH and low <= probeOb.topPrice and high >= probeOb.bottomPrice and close < open and close < probeOb.topPrice
-                        matchedObBar := probeOb.createdBar
-                    scanIdx := scanIdx - 1
-                bool isNewOb = na(trade.lastEntryObCreatedBar) or matchedObBar != trade.lastEntryObCreatedBar
-                if isNewOb
-                    f_open_position(trade, -1, true, maxPyramidingCount, useSlTp, lastConfirmedHighPivotPrice, appliedRrShort)
-                    trade.lastEntryObCreatedBar := matchedObBar
-                    string shortObText = "S" + str.tostring(trade.openPositionCount) + (shortObPremium ? "★" : "")
-                    float shortObLabelPrice = high + signalLabelOffsetPrice
-                    label shortObLabel = label.new(time, shortObLabelPrice, shortObText, xloc=xloc.bar_time, style=label.style_label_down, textcolor=shortSignalColor, color=color.new(shortSignalColor, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
-                    f_append_signal_label_with_cap(signalLabels, shortObLabel, maxSignalLabels)
-
-    // HUDは1テーブルに合体。方向性とパフォーマンスは個別の表示設定に従い、両方OFFならテーブル全体を消去する
-    if showHud or showPerformanceHud
-        f_render_combined_hud(hudTable, showHud, showPerformanceHud, hasStrongTrend, efficiencyRatioValue, confirmedPivotType, stats.totalTradeCount, stats.winTradeCount, stats.grossProfitTicks, stats.grossLossTicks, stats.cumulativePnlTicks, trade.positionDirection, trade.openPositionCount, maxPyramidingCount, htfTimeframe, htfBullish, htfBearish, htfErValue, useHtfFilter, useDynamicRr, appliedRrLong, appliedRrShort, riskRewardRatio)
+    // 方向性HUDのみ描画する。非表示時はテーブル全体を消去する
+    if showHud
+        f_render_direction_hud(hudTable, confirmedPivotType, efficiencyRatioValue, htfTimeframe, htfBullish, htfBearish, htfErValue, useHtfFilter)
     else
         table.clear(hudTable, 0, 0, TABLE_LAST_COLUMN_INDEX, TABLE_LAST_ROW_INDEX)
 
@@ -596,3 +484,6 @@ zz_run() =>
     if showRealtimeLeg and not na(confirmedPivotPrice) and not na(legExtremePrice)
         color liveColor = activeLegDirection == PIVOT_TYPE_UP ? upColor : downColor
         realtimeLegLine := line.new(confirmedPivotTime, confirmedPivotPrice, legExtremeTime, legExtremePrice, xloc=xloc.bar_time, color=color.new(liveColor, 0), style=line.style_dotted, width=lineWidth)
+
+    // Why: barcolor() と plot() はグローバルスコープでのみ呼び出せるため、着色・描画判定に必要な状態をタプルで外部公開する
+    [activeLegDirection, htfBullish, htfBearish, useHtfFilter, htfVwmaPrice]

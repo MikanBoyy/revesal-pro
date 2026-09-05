@@ -4,7 +4,16 @@ indicator("Revesal Pro", overlay=true, max_lines_count=500, max_labels_count=500
 //#include "core_math.pine"
 //#include "rendering.pine"
 //#include "sr_engine.pine"
-//#include "trade_engine.pine"
 //#include "state_machine.pine"
 
-zz_run()
+bool showBarColor = input.bool(true, "トレンドバー色を表示", tooltip="アクティブレッグ方向に応じてキャンドルを着色します。上位足と方向不一致時はグレー表示")
+bool showHtfVwma = input.bool(true, "上位足VWMAを表示", tooltip="上位足の出来高加重移動平均線（期間20）を表示します")
+
+[activeLegDirection, htfBullish, htfBearish, useHtfFilterForBarColor, htfVwmaPriceValue] = zz_run()
+
+// Why: barcolor() はグローバルスコープでのみ呼び出せるため、zz_run() から返却された状態でここで着色する
+color trendBarColor = showBarColor ? f_calc_bar_color_trend(activeLegDirection, htfBullish, htfBearish, useHtfFilterForBarColor) : na
+barcolor(trendBarColor)
+
+// Why: 既存オブジェクトと競合しないよう、太さ1・透明度40の控えめな白グレー系（#B0BEC5）で描画する
+plot(showHtfVwma ? htfVwmaPriceValue : na, "HTF VWMA", color=color.new(#B0BEC5, 40), linewidth=1)
