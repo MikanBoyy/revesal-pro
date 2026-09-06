@@ -128,7 +128,8 @@ zz_run() =>
     int maxHorizontalLinesCount = input.int(50, "Max_Lines_Count", minval=10, maxval=400, tooltip="チャート上に保持する最大水平ライン数")
     int expiryBarsAfterBreak = input.int(100, "Expiry_Bars_After_Break", minval=1, maxval=2000, tooltip="Broken後に何本でラインを削除するか")
     bool showHud = input.bool(true, "HUDを表示", tooltip="執行足と上位足の方向・ER熱度を表示")
-    bool showSignals = input.bool(true, "シグナルを表示", tooltip="確定反転シグナルを表示")
+    bool showPivotSignals = input.bool(false, "HH・LLシグナルを表示", tooltip="確定したHH・LLのピボットシグナルを表示")
+    bool showTcLabels = input.bool(true, "TCラベルを表示", tooltip="レジーム転換を示すTCラベルを表示")
     int maxSignalLabels = input.int(120, "シグナル保持本数", minval=20, maxval=300, tooltip="古いシグナルラベルは自動削除")
     int maxLines = input.int(300, "表示ライン本数", minval=50, maxval=500, tooltip="古いZigZagラインは自動削除")
     bool showRealtimeLeg = input.bool(true, "未確定レッグを表示", tooltip="最後の確定ピボットから現在の暫定極値への点線を表示")
@@ -388,7 +389,7 @@ zz_run() =>
             institutionalSignalActive := false
 
     bool shouldShowPivotSignalLabel = reversalSignalLabelText == "HH" or reversalSignalLabelText == "LL"
-    if showSignals and reversalConfirmSignal and shouldShowPivotSignalLabel and not na(reversalConfirmSignalPrice) and str.length(reversalSignalLabelText) > 0
+    if showPivotSignals and reversalConfirmSignal and shouldShowPivotSignalLabel and not na(reversalConfirmSignalPrice) and str.length(reversalSignalLabelText) > 0
         float reversalLabelPrice = confirmedPivotType == PIVOT_TYPE_UP ? reversalConfirmSignalPrice + signalLabelOffsetPrice : reversalConfirmSignalPrice - signalLabelOffsetPrice
         // Why: ポインタ形状（label_down/label_up）でピボット位置を直接指し示させ、label_left の横並び配置による密集時の可読性低下を解消する
         string pivotLabelStyle = confirmedPivotType == PIVOT_TYPE_UP ? label.style_label_down : label.style_label_up
@@ -421,7 +422,7 @@ zz_run() =>
     currentRegime := nextRegimeState
 
     // レジーム転換（TC）の目印を転換ラインと同色の紫で常時表示する
-    if showSignals and regimeShiftConfirmedSignal and not na(regimeShiftSignalPrice)
+    if showTcLabels and regimeShiftConfirmedSignal and not na(regimeShiftSignalPrice)
         // Why: TCラベルは転換ライン（紫）と同色に統一し、方向はポインタ形状（強気転換=label_up/弱気転換=label_down）で表現する。
         //      旧来の紺/赤は暗背景で沈み、下降転換の赤がLLラベルの赤と近似して誤認を招いていたため廃止する
         string tcLabelStyle = regimeShiftIsBullish ? label.style_label_up : label.style_label_down
