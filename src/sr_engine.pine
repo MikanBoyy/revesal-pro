@@ -71,123 +71,216 @@ type SRLine
     bool isVisible
     bool isRegimeCandidate
 
-// @type オーダーブロックの属性情報を1要素に集約する構造体
-type OrderBlock
+// @type 確定したZigZagピボットのクラスタ探索用情報
+type ConfirmedPivot
+    float price
+    int barIndex
+    int pivotType
+
+// @type ピボットクラスタ型疑似OBの属性情報を1要素に集約する構造体
+type PseudoOrderBlock
     box bx
     float topPrice
     float bottomPrice
     int direction
-    bool isPremium
     int createdBar
+    int confirmedBar
     int state
-    float erValue
     int touchCount
-    bool extensionStopped
     bool wasInsideZone
+    int pivotCount
+    float clusterVolumeAvg
+    bool extensionStopped
 
-// @function 指定インデックスのオーダーブロックを削除する
-// @param activeOBs OrderBlock配列
+// @function 指定インデックスの疑似OBを削除する
+// @param pseudoOrderBlocks PseudoOrderBlock配列
 // @param targetIndex 削除対象インデックス
 // @return なし
-f_delete_order_block_at(activeOBs, targetIndex) =>
-    OrderBlock targetOb = array.get(activeOBs, targetIndex)
-    box.delete(targetOb.bx)
-    array.remove(activeOBs, targetIndex)
+f_delete_pseudo_order_block_at(pseudoOrderBlocks, targetIndex) =>
+    PseudoOrderBlock targetOrderBlock = array.get(pseudoOrderBlocks, targetIndex)
+    box.delete(targetOrderBlock.bx)
+    array.remove(pseudoOrderBlocks, targetIndex)
 
-// @function オーダーブロック配列を上限本数に収める
-// @param activeOBs OrderBlock配列
-// @param maxObBoxesCount 保持上限
+// @function 疑似OB配列を上限本数に収める
+// @param pseudoOrderBlocks PseudoOrderBlock配列
+// @param maxPseudoOrderBlocksCount 保持上限
 // @return なし
-f_trim_order_blocks_with_cap(activeOBs, maxObBoxesCount) =>
-    while array.size(activeOBs) > maxObBoxesCount
-        f_delete_order_block_at(activeOBs, 0)
+f_trim_pseudo_order_blocks_with_cap(pseudoOrderBlocks, maxPseudoOrderBlocksCount) =>
+    while array.size(pseudoOrderBlocks) > maxPseudoOrderBlocksCount
+        f_delete_pseudo_order_block_at(pseudoOrderBlocks, 0)
 
-// @function オーダーブロック配列を更新し、Mitigated/Brokenを反映する
-// @param activeOBs OrderBlock配列
-// @param obStateActive Active状態値
-// @param obStateMitigated Mitigated状態値
-// @param obDirectionBullish 強気方向値
-// @param bullishObColor 通常強気OB色
-// @param bearishObColor 通常弱気OB色
-// @param premiumObColor Premium OB色
-// @param obAlphaMitigated Mitigated時の透明度
-// @param obExtensionMode 延長モード
-// @param obModeBrokenUntil Brokenまで延長モード名
-// @param obModeStopAtFirstMitigation 初回Mitigated停止モード名
-// @param obModeStopAtTouchLimit N回接触停止モード名
-// @param obMitigationTouchLimit 延長停止までの接触回数上限
-// @param obMaxAgeBars OB寿命バー数
-// @param obExpiryAction 寿命到達時の処理モード
-// @param obExpiryActionDelete 寿命到達時に削除するモード名
-// @param obExpiryActionDotted 寿命到達時に点線化するモード名
-// @param obStateBroken Broken状態値
+// @function 同方向かつ価格帯が重なる有効な疑似OBの有無を判定する
+// @param pseudoOrderBlocks PseudoOrderBlock配列
+// @param candidateTopPrice 候補上限
+// @param candidateBottomPrice 候補下限
+// @param candidateDirection 候補方向（1=Support、-1=Resistance）
+// @param activeState Active状態値
+// @param mitigatedState Mitigated状態値
+// @return 重複する有効ゾーンがある場合はtrue
+f_has_overlapping_pseudo_order_block(pseudoOrderBlocks, candidateTopPrice, candidateBottomPrice, candidateDirection, activeState, mitigatedState) =>
+    bool hasOverlap = false
+    int orderBlockIndex = array.size(pseudoOrderBlocks) - 1
+    while orderBlockIndex >= 0
+        PseudoOrderBlock currentOrderBlock = array.get(pseudoOrderBlocks, orderBlockIndex)
+        bool isLiveZone = currentOrderBlock.state == activeState or currentOrderBlock.state == mitigatedState
+        bool sameDirection = currentOrderBlock.direction == candidateDirection
+        bool pricesOverlap = candidateBottomPrice <= currentOrderBlock.topPrice and candidateTopPrice >= currentOrderBlock.bottomPrice
+        if isLiveZone and sameDirection and pricesOverlap
+            hasOverlap := true
+        orderBlockIndex := orderBlockIndex - 1
+    hasOverlap
+
+// @function クラスタ候補から疑似OBを生成する
+// @param confirmedPivots 確定ピボット履歴
+// @param pseudoOrderBlocks PseudoOrderBlock配列
+// @param latestPivotType 最新ピボット種別（高値=1、安値=-1）
+// @param clusterWidthPrice 価格クラスタ幅
+// @param minimumBounceBars 最小反発バー数
+// @param volumeMultiplier 出来高倍率閾値
+// @param boundaryMode ゾーン境界モード
+// @param wickBoundaryMode ヒゲを含むモード名
+// @param maximumWidthAtr ゾーン幅上限ATR倍率
+// @param minimumWidthAtr ゾーン幅下限ATR倍率
+// @param atrValue 現在ATR
+// @param volumeSma20 出来高SMA20
+// @param supportColor Support色
+// @param resistanceColor Resistance色
+// @param activeAlpha Active時透明度
+// @param activeState Active状態値
+// @param mitigatedState Mitigated状態値
+// @param maxPseudoOrderBlocksCount 保持上限
 // @return なし
-f_update_order_blocks(activeOBs, obStateActive, obStateMitigated, obDirectionBullish, bullishObColor, bearishObColor, premiumObColor, obAlphaMitigated, obExtensionMode, obModeBrokenUntil, obModeStopAtFirstMitigation, obModeStopAtTouchLimit, obMitigationTouchLimit, obMaxAgeBars, obExpiryAction, obExpiryActionDelete, obExpiryActionDotted, obStateBroken) =>
-    int obIndex = array.size(activeOBs) - 1
-    while obIndex >= 0
-        OrderBlock currentOb = array.get(activeOBs, obIndex)
-        bool isBullishOb = currentOb.direction == obDirectionBullish
-        bool brokenByClose = isBullishOb ? close < currentOb.bottomPrice : close > currentOb.topPrice
-        bool isAgeExpired = obMaxAgeBars > 0 and bar_index - currentOb.createdBar >= obMaxAgeBars
+f_create_pseudo_order_block_from_cluster(confirmedPivots, pseudoOrderBlocks, latestPivotType, clusterWidthPrice, minimumBounceBars, volumeMultiplier, boundaryMode, wickBoundaryMode, maximumWidthAtr, minimumWidthAtr, atrValue, volumeSma20, supportColor, resistanceColor, activeAlpha, activeState, mitigatedState, maxPseudoOrderBlocksCount) =>
+    int pivotHistoryCount = array.size(confirmedPivots)
+    bool canEvaluateCluster = pivotHistoryCount >= 2 and not na(clusterWidthPrice) and clusterWidthPrice > 0 and not na(atrValue)
+    if canEvaluateCluster
+        ConfirmedPivot latestPivot = array.get(confirmedPivots, pivotHistoryCount - 1)
+        int pseudoOrderBlockDirection = latestPivotType == -1 ? 1 : -1
+        float seedTopPrice = latestPivot.price + clusterWidthPrice
+        float seedBottomPrice = latestPivot.price - clusterWidthPrice
+        int clusterPivotCount = 0
+        int oldestClusterBar = latestPivot.barIndex
+        float zoneTopPrice = na
+        float zoneBottomPrice = na
 
-        if brokenByClose
-            f_delete_order_block_at(activeOBs, obIndex)
-        else if isAgeExpired
-            bool shouldDeleteByAge = obExpiryAction == obExpiryActionDelete
-            if shouldDeleteByAge
-                f_delete_order_block_at(activeOBs, obIndex)
+        int pivotIndex = pivotHistoryCount - 1
+        while pivotIndex >= 0
+            ConfirmedPivot clusterPivot = array.get(confirmedPivots, pivotIndex)
+            bool belongsToCluster = math.abs(clusterPivot.price - latestPivot.price) <= clusterWidthPrice
+            if belongsToCluster
+                // Why: ピボット履歴のバー位置は可変であり、OHLCの動的履歴参照は必要参照長を確定できずPineの実行制限に触れる。
+                //      ピボット価格を境界候補とし、固定100バー内に制限した反発足だけで足の高安値または実体端を広げる。
+                zoneTopPrice := na(zoneTopPrice) ? clusterPivot.price : math.max(zoneTopPrice, clusterPivot.price)
+                zoneBottomPrice := na(zoneBottomPrice) ? clusterPivot.price : math.min(zoneBottomPrice, clusterPivot.price)
+                oldestClusterBar := math.min(oldestClusterBar, clusterPivot.barIndex)
+                clusterPivotCount := clusterPivotCount + 1
+            pivotIndex := pivotIndex - 1
+
+        int bounceCount = 0
+        float bounceVolumeSum = 0.0
+        float bounceVolumeSmaSum = 0.0
+        int scanLimit = math.min(100, bar_index)
+        for historyOffset = 0 to scanLimit
+            bool touchesSeedZone = high[historyOffset] >= seedBottomPrice and low[historyOffset] <= seedTopPrice
+            // Why: 反発は一足で帯外まで戻る場面だけでなく、帯内で価格を維持してから反転する場面にも現れる。
+            //      終値が反対側へ確定抜けしていないことを条件に、もみ合いを経た反発を反映する。
+            bool isSupportBounce = pseudoOrderBlockDirection == 1 and touchesSeedZone and close[historyOffset] >= seedBottomPrice
+            bool isResistanceBounce = pseudoOrderBlockDirection == -1 and touchesSeedZone and close[historyOffset] <= seedTopPrice
+            if isSupportBounce or isResistanceBounce
+                float rawBounceTopPrice = boundaryMode == wickBoundaryMode ? high[historyOffset] : math.max(open[historyOffset], close[historyOffset])
+                float rawBounceBottomPrice = boundaryMode == wickBoundaryMode ? low[historyOffset] : math.min(open[historyOffset], close[historyOffset])
+                float bounceTopPrice = math.min(rawBounceTopPrice, seedTopPrice)
+                float bounceBottomPrice = math.max(rawBounceBottomPrice, seedBottomPrice)
+                bool hasBoundaryContribution = bounceTopPrice >= bounceBottomPrice
+                // Why: 反発後に伸びた実体・ヒゲまでゾーンに含めると、複数反発で幅が肥大し上限フィルタにより候補が全棄却される。
+                //      クラスタ帯と重なる価格部分だけを境界に寄与させ、反発の起点を監視帯として維持する。
+                if hasBoundaryContribution
+                    zoneTopPrice := na(zoneTopPrice) ? bounceTopPrice : math.max(zoneTopPrice, bounceTopPrice)
+                    zoneBottomPrice := na(zoneBottomPrice) ? bounceBottomPrice : math.min(zoneBottomPrice, bounceBottomPrice)
+                oldestClusterBar := math.min(oldestClusterBar, bar_index - historyOffset)
+                bounceCount := bounceCount + 1
+                bounceVolumeSum := bounceVolumeSum + volume[historyOffset]
+                bounceVolumeSmaSum := bounceVolumeSmaSum + volumeSma20[historyOffset]
+
+        float clusterVolumeAverage = bounceCount > 0 ? bounceVolumeSum / bounceCount : na
+        float bounceVolumeSmaAverage = bounceCount > 0 ? bounceVolumeSmaSum / bounceCount : na
+        bool hasCluster = clusterPivotCount >= 2
+        bool hasRequiredBounces = bounceCount >= minimumBounceBars
+        bool hasVolumeData = not na(volume) and volume > 0
+        bool hasRequiredVolume = not hasVolumeData or (not na(clusterVolumeAverage) and not na(bounceVolumeSmaAverage) and clusterVolumeAverage >= bounceVolumeSmaAverage * volumeMultiplier)
+        bool hasZoneBounds = not na(zoneTopPrice) and not na(zoneBottomPrice) and zoneTopPrice >= zoneBottomPrice
+
+        if hasCluster and hasRequiredBounces and hasRequiredVolume and hasZoneBounds
+            float zoneWidth = zoneTopPrice - zoneBottomPrice
+            bool exceedsMaximumWidth = zoneWidth > atrValue * maximumWidthAtr
+            if not exceedsMaximumWidth
+                float minimumZoneWidth = atrValue * minimumWidthAtr
+                if zoneWidth < minimumZoneWidth
+                    float zoneCenterPrice = (zoneTopPrice + zoneBottomPrice) / 2.0
+                    zoneTopPrice := zoneCenterPrice + minimumZoneWidth / 2.0
+                    zoneBottomPrice := zoneCenterPrice - minimumZoneWidth / 2.0
+
+                bool hasDuplicateZone = f_has_overlapping_pseudo_order_block(pseudoOrderBlocks, zoneTopPrice, zoneBottomPrice, pseudoOrderBlockDirection, activeState, mitigatedState)
+                if not hasDuplicateZone
+                    color zoneColor = pseudoOrderBlockDirection == 1 ? supportColor : resistanceColor
+                    box pseudoOrderBlockBox = box.new(oldestClusterBar, zoneTopPrice, bar_index, zoneBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(zoneColor, activeAlpha), border_width=1, border_color=color.new(zoneColor, 0))
+                    PseudoOrderBlock newPseudoOrderBlock = PseudoOrderBlock.new(pseudoOrderBlockBox, zoneTopPrice, zoneBottomPrice, pseudoOrderBlockDirection, oldestClusterBar, bar_index, activeState, 0, false, clusterPivotCount, clusterVolumeAverage, false)
+                    array.push(pseudoOrderBlocks, newPseudoOrderBlock)
+                    f_trim_pseudo_order_blocks_with_cap(pseudoOrderBlocks, maxPseudoOrderBlocksCount)
+
+// @function 疑似OB配列を更新し、Mitigated/Broken/Expiredを反映する
+// @param pseudoOrderBlocks PseudoOrderBlock配列
+// @param activeState Active状態値
+// @param mitigatedState Mitigated状態値
+// @param brokenState Broken状態値
+// @param expiredState Expired状態値
+// @param supportColor Support色
+// @param resistanceColor Resistance色
+// @param mitigatedAlpha Mitigated時透明度
+// @param maxAgeBars 寿命バー数
+// @param expiryAction 寿命到達時の処理
+// @param expiryDeleteAction 寿命到達時に削除するモード名
+// @return なし
+f_update_pseudo_order_blocks(pseudoOrderBlocks, activeState, mitigatedState, brokenState, expiredState, supportColor, resistanceColor, mitigatedAlpha, maxAgeBars, expiryAction, expiryDeleteAction) =>
+    int orderBlockIndex = array.size(pseudoOrderBlocks) - 1
+    while orderBlockIndex >= 0
+        PseudoOrderBlock currentOrderBlock = array.get(pseudoOrderBlocks, orderBlockIndex)
+        bool isSupportZone = currentOrderBlock.direction == 1
+        bool isBroken = isSupportZone ? close < currentOrderBlock.bottomPrice : close > currentOrderBlock.topPrice
+        bool isExpired = maxAgeBars > 0 and bar_index - currentOrderBlock.confirmedBar >= maxAgeBars
+        bool isActiveState = currentOrderBlock.state == activeState or currentOrderBlock.state == mitigatedState
+
+        if isActiveState and isBroken
+            currentOrderBlock.state := brokenState
+            currentOrderBlock.extensionStopped := true
+            box.set_right(currentOrderBlock.bx, bar_index)
+            box.set_bgcolor(currentOrderBlock.bx, color.new(isSupportZone ? supportColor : resistanceColor, 96))
+            box.set_border_style(currentOrderBlock.bx, line.style_dotted)
+            array.set(pseudoOrderBlocks, orderBlockIndex, currentOrderBlock)
+        else if isActiveState and isExpired
+            if expiryAction == expiryDeleteAction
+                f_delete_pseudo_order_block_at(pseudoOrderBlocks, orderBlockIndex)
             else
-                color baseColor = currentOb.isPremium ? premiumObColor : (isBullishOb ? bullishObColor : bearishObColor)
-                currentOb.state := obStateBroken
-                currentOb.extensionStopped := true
-                box.set_right(currentOb.bx, bar_index)
-                box.set_bgcolor(currentOb.bx, color.new(baseColor, 96))
-                box.set_border_width(currentOb.bx, 1)
-                box.set_border_style(currentOb.bx, line.style_dotted)
-                box.set_border_color(currentOb.bx, color.new(baseColor, 0))
-                array.set(activeOBs, obIndex, currentOb)
-        else
-            float zoneTop = currentOb.topPrice
-            float zoneBottom = currentOb.bottomPrice
-            bool isInsideZone = high >= zoneBottom and low <= zoneTop
-            bool touchEntry = isInsideZone and not currentOb.wasInsideZone
-
-            if not currentOb.extensionStopped
-                box.set_right(currentOb.bx, bar_index)
-
-            // Why: OBの状態を枠線でも表現する。Active=実線枠、Mitigated=点線枠。背景透明度の差だけでは輪郭が曖昧でゾーン認識が遅れるため
-            color obBorderBaseColor = currentOb.isPremium ? premiumObColor : (isBullishOb ? bullishObColor : bearishObColor)
-            box.set_border_width(currentOb.bx, 1)
-            box.set_border_style(currentOb.bx, currentOb.state == obStateActive ? line.style_solid : line.style_dotted)
-            box.set_border_color(currentOb.bx, color.new(obBorderBaseColor, 0))
-
-            bool canTransitionToMitigated = currentOb.state == obStateActive
-            if canTransitionToMitigated
-                bool isMitigated = isBullishOb ? low < currentOb.topPrice : high > currentOb.bottomPrice
-                if isMitigated
-                    color baseColor = currentOb.isPremium ? premiumObColor : (isBullishOb ? bullishObColor : bearishObColor)
-                    currentOb.state := obStateMitigated
-                    currentOb.touchCount := 1
-                    box.set_bgcolor(currentOb.bx, color.new(baseColor, obAlphaMitigated))
-
-                    bool shouldStopOnFirstMitigation = obExtensionMode == obModeStopAtFirstMitigation
-                    bool shouldStopOnTouchLimit = obExtensionMode == obModeStopAtTouchLimit and currentOb.touchCount >= obMitigationTouchLimit
-                    if shouldStopOnFirstMitigation or shouldStopOnTouchLimit
-                        currentOb.extensionStopped := true
-
-            else if currentOb.state == obStateMitigated and touchEntry
-                currentOb.touchCount := currentOb.touchCount + 1
-                bool shouldStopOnTouchLimit = obExtensionMode == obModeStopAtTouchLimit and currentOb.touchCount >= obMitigationTouchLimit
-                if shouldStopOnTouchLimit
-                    currentOb.extensionStopped := true
-
-            if obExtensionMode == obModeBrokenUntil
-                currentOb.extensionStopped := false
-
-            currentOb.wasInsideZone := isInsideZone
-            array.set(activeOBs, obIndex, currentOb)
-
-        obIndex := obIndex - 1
+                currentOrderBlock.state := expiredState
+                currentOrderBlock.extensionStopped := true
+                box.set_right(currentOrderBlock.bx, bar_index)
+                box.set_bgcolor(currentOrderBlock.bx, color.new(isSupportZone ? supportColor : resistanceColor, 96))
+                box.set_border_style(currentOrderBlock.bx, line.style_dotted)
+                array.set(pseudoOrderBlocks, orderBlockIndex, currentOrderBlock)
+        else if isActiveState
+            bool isInsideZone = high >= currentOrderBlock.bottomPrice and low <= currentOrderBlock.topPrice
+            bool canCountTouch = bar_index > currentOrderBlock.confirmedBar
+            bool touchEntry = canCountTouch and isInsideZone and not currentOrderBlock.wasInsideZone
+            if not currentOrderBlock.extensionStopped
+                box.set_right(currentOrderBlock.bx, bar_index)
+            if touchEntry
+                currentOrderBlock.touchCount := currentOrderBlock.touchCount + 1
+                currentOrderBlock.state := mitigatedState
+                box.set_bgcolor(currentOrderBlock.bx, color.new(isSupportZone ? supportColor : resistanceColor, mitigatedAlpha))
+                box.set_border_style(currentOrderBlock.bx, line.style_dotted)
+            currentOrderBlock.wasInsideZone := isInsideZone
+            array.set(pseudoOrderBlocks, orderBlockIndex, currentOrderBlock)
+        orderBlockIndex := orderBlockIndex - 1
 
 // @function 水平線管理配列から指定インデックスの要素を削除する
 // @param horizontalLines SRLine配列

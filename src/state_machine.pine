@@ -26,44 +26,15 @@ f_eval_break_confirmation(hasStrongTrend, breakTriggered, breakConfirmationCount
         shouldConfirm := nextBreakCount >= 2
     [shouldConfirm, nextBreakCount]
 
-// @function 指定した起点バー・方向のOBが既に存在するかを判定する
-// @param activeOBs OrderBlock配列
-// @param targetCreatedBar 起点バー
-// @param targetDirection 方向（1=強気, -1=弱気）
-// @return 既存OBがある場合はtrue
-f_has_order_block_for_anchor(activeOBs, targetCreatedBar, targetDirection) =>
-    bool hasDuplicate = false
-    int obIndex = array.size(activeOBs) - 1
-    while obIndex >= 0
-        OrderBlock currentOb = array.get(activeOBs, obIndex)
-        bool sameAnchor = currentOb.createdBar == targetCreatedBar and currentOb.direction == targetDirection
-        if sameAnchor
-            hasDuplicate := true
-        obIndex := obIndex - 1
-    hasDuplicate
-
-// @function ピボット直前で最後に出現した逆色ローソク足の履歴オフセットを返す
-// @param pivotBarIndex 対象ピボットのバーインデックス
-// @param pivotLegStartBarIndex ピボット探索レッグの開始バーインデックス
-// @param searchBearish trueなら陰線、falseなら陽線を探索
-// @return 見つかった履歴オフセット（未検出はna）
-f_find_last_opposite_candle_offset(pivotBarIndex, pivotLegStartBarIndex, searchBearish) =>
-    int oppositeOffset = na
-    int pivotOffset = bar_index - pivotBarIndex
-    int oldestOffset = bar_index - pivotLegStartBarIndex
-    bool canSearch = not na(pivotBarIndex) and not na(pivotLegStartBarIndex) and pivotOffset >= 0 and oldestOffset >= pivotOffset + 1
-
-    if canSearch
-        int scanOffset = pivotOffset + 1
-        while scanOffset <= oldestOffset and na(oppositeOffset)
-            bool bearishBar = close[scanOffset] < open[scanOffset]
-            bool bullishBar = close[scanOffset] > open[scanOffset]
-            bool isMatched = searchBearish ? bearishBar : bullishBar
-            if isMatched
-                oppositeOffset := scanOffset
-            scanOffset := scanOffset + 1
-
-    oppositeOffset
+// @function 確定ピボットを探索上限付きFIFOへ追加する
+// @param confirmedPivots ConfirmedPivot配列
+// @param newPivot 新規確定ピボット
+// @param maxPivotDepth 保持する最大ピボット数
+// @return なし
+f_append_confirmed_pivot_with_cap(confirmedPivots, newPivot, maxPivotDepth) =>
+    array.push(confirmedPivots, newPivot)
+    if array.size(confirmedPivots) > maxPivotDepth
+        array.shift(confirmedPivots)
 
 // @function 高安値追従型ZigZagを描画する
 // @param なし
@@ -77,11 +48,10 @@ zz_run() =>
     int SR_STATE_ACTIVE = 1
     int SR_STATE_FLIPPED = 2
     int SR_STATE_BROKEN = 3
-    int OB_DIRECTION_BULLISH = 1
-    int OB_DIRECTION_BEARISH = -1
-    int OB_STATE_ACTIVE = 1
-    int OB_STATE_MITIGATED = 2
-    int OB_STATE_BROKEN = 3
+    int PSEUDO_OB_STATE_ACTIVE = 1
+    int PSEUDO_OB_STATE_MITIGATED = 2
+    int PSEUDO_OB_STATE_BROKEN = 3
+    int PSEUDO_OB_STATE_EXPIRED = 4
     int REGIME_UNKNOWN = 0
     int REGIME_BULLISH = 1
     int REGIME_BEARISH = -1
@@ -96,11 +66,8 @@ zz_run() =>
     int SIGNAL_LABEL_ATR_PERIOD = 14
     string SR_CONFIRM_MODE_FIRST_EXTREME = "足1極値更新"
     string SR_CONFIRM_MODE_LINE_PRICE = "ライン価格維持"
-    string OB_EXTEND_MODE_BROKEN_UNTIL = "Brokenまで延長"
-    string OB_EXTEND_MODE_STOP_AT_FIRST_MITIGATION = "初回Mitigatedで延長停止"
-    string OB_EXTEND_MODE_STOP_AT_TOUCH_LIMIT = "N回接触で延長停止"
-    string OB_EXPIRY_ACTION_DELETE = "削除"
-    string OB_EXPIRY_ACTION_DOTTED = "点線化して残す"
+    string PSEUDO_OB_EXPIRY_ACTION_DELETE = "削除"
+    string PSEUDO_OB_EXPIRY_ACTION_DOTTED = "点線化して残す"
     // Why: 色相の役割分担を明確化する。緑=上昇/強気、赤=下降/弱気、紫=レジーム転換専用。
     //      TradingView慣例の落ち着いた色相（#26A69A/#EF5350）に統一し、旧lime/redの彩度過剰によるOB・ラベルとの同化を解消する
     color HIGH_SIDE_LABEL_COLOR = #26A69A
@@ -144,24 +111,21 @@ zz_run() =>
     // High < Low[2] の不均衡（下降FVG）を描画する色
     // Why: 下降/弱気の統一色 #EF5350 系。上昇FVGと同じ透明度設計とする
     color bearishCoreFvgColor = color.new(#EF5350, 80)
-    bool showOB = input.bool(true, "OBを表示", tooltip="オーダーブロック機能全体の表示/非表示")
-    string obSourceMode = input.string("ヒゲを含む", "OB境界モード", options=["ヒゲを含む", "実体のみ"], tooltip="OBの境界をヒゲベースにするか実体ベースにするか")
-    int maxObBoxesCount = input.int(40, "OB保持数", minval=10, maxval=100, tooltip="チャート上に保持するOBボックスの最大数")
-    // 通常の強気OBの描画色
-    // Why: 上昇/強気の統一色 #26A69A。HHラベル・レッグと同系だが、ボックスの透明度と枠線で役割を区別する
-    color bullishObColor = #26A69A
-    // 通常の弱気OBの描画色
-    // Why: 下降/弱気の統一色 #EF5350
-    color bearishObColor = #EF5350
-    // 機関性裏付けのあるPremium OBの描画色
-    // Why: 旧 #7A1CAC は転換ライン紫と近接し「転換」と「Premium OB」の区別がつかなかったため、琥珀系 #FF9800 に変更する
-    color premiumObColor = #FF9800
-    int obAlphaActive = input.int(70, "OB透明度（有効時）", minval=0, maxval=100, tooltip="アクティブなOBの背景透明度")
-    int obAlphaMitigated = input.int(75, "OB透明度（吸収済）", minval=0, maxval=100, tooltip="吸収済OBの背景透明度")
-    string obExtendMode = input.string(OB_EXTEND_MODE_BROKEN_UNTIL, "OB延長モード", options=[OB_EXTEND_MODE_BROKEN_UNTIL, OB_EXTEND_MODE_STOP_AT_FIRST_MITIGATION, OB_EXTEND_MODE_STOP_AT_TOUCH_LIMIT], tooltip="Balanced推奨: Brokenまで延長。必要に応じて接触基準で停止に切替できます")
-    int obMitigationTouchLimit = input.int(1, "OB延長停止の接触回数", minval=1, maxval=10, tooltip="延長モードがN回接触で延長停止の場合に使用します")
-    int obMaxAgeBars = input.int(600, "OB寿命（バー数）", minval=10, maxval=2000, tooltip="作成から指定バー経過後は寿命切れとして処理します")
-    string obExpiryAction = input.string(OB_EXPIRY_ACTION_DELETE, "OB寿命到達時の処理", options=[OB_EXPIRY_ACTION_DELETE, OB_EXPIRY_ACTION_DOTTED], tooltip="寿命経過後に削除するか、点線化して残すかを選択します")
+    bool showPseudoOrderBlocks = input.bool(true, "疑似OBを表示", group="疑似OB: 検出", tooltip="ピボットクラスタ型のSupport/Resistanceゾーンを表示します")
+    int pseudoObPivotDepth = input.int(6, "探索ピボット深度", minval=2, maxval=10, group="疑似OB: 検出", tooltip="価格クラスタの判定対象にする直近の確定ピボット数")
+    float pseudoObClusterAtrMultiplier = input.float(0.5, "価格クラスタ幅乗数", minval=0.1, step=0.1, group="疑似OB: 検出", tooltip="同一価格帯とみなすATR乗数です")
+    int pseudoObMinimumBounceBars = input.int(3, "最小反発バー数", minval=1, maxval=20, group="疑似OB: 検出", tooltip="固定100バー内で確認すべき最低反発回数です")
+    float pseudoObVolumeMultiplier = input.float(1.0, "出来高倍率閾値", minval=0.1, step=0.1, group="疑似OB: 検出", tooltip="反発足の平均出来高が平均SMA20以上となる必要倍率です")
+    string pseudoObBoundaryMode = input.string("ヒゲを含む", "ゾーン境界モード", options=["ヒゲを含む", "実体のみ"], group="疑似OB: 形状", tooltip="ゾーン上下限をヒゲまたは実体で算出します")
+    float pseudoObMaximumWidthAtr = input.float(2.0, "ゾーン幅上限 (ATR)", minval=0.1, step=0.1, group="疑似OB: 形状", tooltip="この幅を超える候補は曖昧なため生成しません")
+    float pseudoObMinimumWidthAtr = input.float(0.3, "ゾーン幅下限 (ATR)", minval=0.1, step=0.1, group="疑似OB: 形状", tooltip="この幅未満では表示可能な最小幅へ対称拡張します")
+    int maxPseudoObBoxesCount = input.int(20, "保持ゾーン最大数", minval=1, maxval=100, group="疑似OB: 管理", tooltip="チャート上に保持する疑似OBボックスの上限です")
+    int pseudoObMaxAgeBars = input.int(600, "寿命バー数", minval=10, maxval=2000, group="疑似OB: 管理", tooltip="条件が揃った確定バーからの有効期間です")
+    string pseudoObExpiryAction = input.string(PSEUDO_OB_EXPIRY_ACTION_DELETE, "寿命到達時の処理", options=[PSEUDO_OB_EXPIRY_ACTION_DELETE, PSEUDO_OB_EXPIRY_ACTION_DOTTED], group="疑似OB: 管理", tooltip="寿命到達時に削除するか点線化して残すかを選択します")
+    color pseudoObSupportColor = #26A69A
+    color pseudoObResistanceColor = #EF5350
+    int pseudoObActiveAlpha = 70
+    int pseudoObMitigatedAlpha = 82
     // 転換確定ラインを強調表示する色
     color reversalLineColor = color.new(REVERSAL_LINE_COLOR_DEFAULT, 0)
     int reversalLineWidth = input.int(2, "転換ライン太さ", minval=2, maxval=5, tooltip="転換確定時のライン太さ")
@@ -175,6 +139,7 @@ zz_run() =>
     bool useHtfFilter = input.bool(true, "上位足トレンドを表示", tooltip="上位足の時間軸・方向・ERをHUDに表示します")
 
     float atrValue = ta.atr(atrPeriod)
+    float volumeSma20 = ta.sma(volume, 20)
     float efficiencyRatioValue = f_calc_efficiency_ratio(close, erPeriod)
     // Why: 時間軸別ER閾値の自動調整（①）はPF改善に寄与しなかったため撤去し、固定閾値に戻す
     bool hasStrongTrend = efficiencyRatioValue >= erThreshold
@@ -189,8 +154,6 @@ zz_run() =>
     bool hasCoreTimeBullishFvg = isCoreTime and hasBullishFvg
     bool hasCoreTimeBearishFvg = isCoreTime and hasBearishFvg
     bool barHasCoreTimeFvg = hasCoreTimeBullishFvg or hasCoreTimeBearishFvg
-    int barsSinceCoreTimeFvg = ta.barssince(barHasCoreTimeFvg)
-    bool hasCoreTimeFvgWithin3Bars = not na(barsSinceCoreTimeFvg) and barsSinceCoreTimeFvg <= 3
 
     // 上位足トレンド情報（HUD表示用）。lookahead_offで確定値のみ参照しリペイントを抑止する
     // Why: 出来高加重でダマシを減らすため SMA から VWMA に置き換える。期間は erPeriod(20) を流用する
@@ -205,10 +168,6 @@ zz_run() =>
     var int confirmedPivotBarIndex = na
     var float lastConfirmedHighPivotPrice = na
     var float lastConfirmedLowPivotPrice = na
-    var int lastConfirmedHighPivotBarIndex = na
-    var int lastConfirmedLowPivotBarIndex = na
-    var int lastConfirmedHighLegStartBarIndex = na
-    var int lastConfirmedLowLegStartBarIndex = na
 
     // activeLegDirection=UPは暫定高値を追跡中、DOWNは暫定安値を追跡中を示す。
     var int activeLegDirection = PIVOT_TYPE_NONE
@@ -224,7 +183,8 @@ zz_run() =>
     var array<SRLine> horizontalLines = array.new<SRLine>()
     var array<line> reversalLines = array.new<line>()
     var array<box> coreTimeFvgBoxes = array.new<box>()
-    var array<OrderBlock> activeOBs = array.new<OrderBlock>()
+    var array<ConfirmedPivot> confirmedPivots = array.new<ConfirmedPivot>()
+    var array<PseudoOrderBlock> pseudoOrderBlocks = array.new<PseudoOrderBlock>()
     var bool institutionalSignalActive = false
     var int currentRegime = REGIME_UNKNOWN
 
@@ -239,8 +199,6 @@ zz_run() =>
     bool regimeShiftIsBullish = false
     float regimeShiftSignalPrice = na
     int regimeShiftSignalTime = na
-    bool createBullishObFromRegimeShift = false
-    bool createBearishObFromRegimeShift = false
 
     if barHasCoreTimeFvg
         institutionalSignalActive := true
@@ -288,23 +246,6 @@ zz_run() =>
 
             int legStartPivotBarIndex = confirmedPivotBarIndex
 
-            if showOB and not na(legStartPivotBarIndex)
-                int bearishAnchorOffset = f_find_last_opposite_candle_offset(legExtremeBarIndex, legStartPivotBarIndex, false)
-                if not na(bearishAnchorOffset)
-                    int bearishAnchorBar = bar_index - bearishAnchorOffset
-                    bool bearishObIsPremium = hasCoreTimeFvgWithin3Bars and hasStrongTrend
-                    bool hasDuplicateBearishOb = f_has_order_block_for_anchor(activeOBs, bearishAnchorBar, OB_DIRECTION_BEARISH)
-
-                    if not hasDuplicateBearishOb
-                        float bearishTopPrice = high[bearishAnchorOffset]
-                        float bearishBottomPrice = obSourceMode == "実体のみ" ? math.min(open[bearishAnchorOffset], close[bearishAnchorOffset]) : low[bearishAnchorOffset]
-                        color bearishBaseColor = bearishObIsPremium ? premiumObColor : bearishObColor
-                        // Why: 実線枠を付けてゾーン輪郭を明確化する。背景透明度だけではローソク足に埋もれて輪郭が曖昧だった
-                        box bearishObBox = box.new(bearishAnchorBar, bearishTopPrice, bar_index, bearishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bearishBaseColor, obAlphaActive), border_width=1, border_color=color.new(bearishBaseColor, 0))
-                        OrderBlock bearishOrderBlock = OrderBlock.new(bearishObBox, bearishTopPrice, bearishBottomPrice, OB_DIRECTION_BEARISH, bearishObIsPremium, bearishAnchorBar, OB_STATE_ACTIVE, efficiencyRatioValue, 0, false, false)
-                        array.push(activeOBs, bearishOrderBlock)
-                        f_trim_order_blocks_with_cap(activeOBs, maxObBoxesCount)
-
             confirmedPivotType := PIVOT_TYPE_UP
             confirmedPivotPrice := legExtremePrice
             confirmedPivotTime := legExtremeTime
@@ -314,8 +255,6 @@ zz_run() =>
             reversalPivotClass := reversalSignalLabelText
             reversalSignalLabelColor := str.substring(reversalSignalLabelText, 0, 1) == "H" ? HIGH_SIDE_LABEL_COLOR : LOW_SIDE_LABEL_COLOR
             lastConfirmedHighPivotPrice := legExtremePrice
-            lastConfirmedHighPivotBarIndex := legExtremeBarIndex
-            lastConfirmedHighLegStartBarIndex := legStartPivotBarIndex
             reversalConfirmSignal := true
             reversalConfirmSignalPrice := legExtremePrice
             reversalConfirmSignalTime := legExtremeTime
@@ -349,23 +288,6 @@ zz_run() =>
 
             int legStartPivotBarIndex = confirmedPivotBarIndex
 
-            if showOB and not na(legStartPivotBarIndex)
-                int bullishAnchorOffset = f_find_last_opposite_candle_offset(legExtremeBarIndex, legStartPivotBarIndex, true)
-                if not na(bullishAnchorOffset)
-                    int bullishAnchorBar = bar_index - bullishAnchorOffset
-                    bool bullishObIsPremium = hasCoreTimeFvgWithin3Bars and hasStrongTrend
-                    bool hasDuplicateBullishOb = f_has_order_block_for_anchor(activeOBs, bullishAnchorBar, OB_DIRECTION_BULLISH)
-
-                    if not hasDuplicateBullishOb
-                        float bullishTopPrice = obSourceMode == "実体のみ" ? math.max(open[bullishAnchorOffset], close[bullishAnchorOffset]) : high[bullishAnchorOffset]
-                        float bullishBottomPrice = low[bullishAnchorOffset]
-                        color bullishBaseColor = bullishObIsPremium ? premiumObColor : bullishObColor
-                        // Why: 実線枠を付けてゾーン輪郭を明確化する。背景透明度だけではローソク足に埋もれて輪郭が曖昧だった
-                        box bullishObBox = box.new(bullishAnchorBar, bullishTopPrice, bar_index, bullishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bullishBaseColor, obAlphaActive), border_width=1, border_color=color.new(bullishBaseColor, 0))
-                        OrderBlock bullishOrderBlock = OrderBlock.new(bullishObBox, bullishTopPrice, bullishBottomPrice, OB_DIRECTION_BULLISH, bullishObIsPremium, bullishAnchorBar, OB_STATE_ACTIVE, efficiencyRatioValue, 0, false, false)
-                        array.push(activeOBs, bullishOrderBlock)
-                        f_trim_order_blocks_with_cap(activeOBs, maxObBoxesCount)
-
             confirmedPivotType := PIVOT_TYPE_DOWN
             confirmedPivotPrice := legExtremePrice
             confirmedPivotTime := legExtremeTime
@@ -375,8 +297,6 @@ zz_run() =>
             reversalPivotClass := reversalSignalLabelText
             reversalSignalLabelColor := str.substring(reversalSignalLabelText, 0, 1) == "H" ? HIGH_SIDE_LABEL_COLOR : LOW_SIDE_LABEL_COLOR
             lastConfirmedLowPivotPrice := legExtremePrice
-            lastConfirmedLowPivotBarIndex := legExtremeBarIndex
-            lastConfirmedLowLegStartBarIndex := legStartPivotBarIndex
             reversalConfirmSignal := true
             reversalConfirmSignalPrice := legExtremePrice
             reversalConfirmSignalTime := legExtremeTime
@@ -397,7 +317,13 @@ zz_run() =>
         label reversalLabel = label.new(reversalConfirmSignalTime, reversalLabelPrice, reversalSignalLabelText, xloc=xloc.bar_time, style=pivotLabelStyle, textcolor=color.white, color=color.new(reversalSignalLabelColor, SIGNAL_LABEL_BG_ALPHA), size=size.small)
         f_append_signal_label_with_cap(signalLabels, reversalLabel, maxSignalLabels)
 
-    if reversalConfirmSignal and not na(confirmedPivotPrice) and not na(confirmedPivotTime)
+    if reversalConfirmSignal and not na(confirmedPivotPrice) and not na(confirmedPivotTime) and not na(confirmedPivotBarIndex)
+        ConfirmedPivot newConfirmedPivot = ConfirmedPivot.new(confirmedPivotPrice, confirmedPivotBarIndex, confirmedPivotType)
+        f_append_confirmed_pivot_with_cap(confirmedPivots, newConfirmedPivot, pseudoObPivotDepth)
+        if showPseudoOrderBlocks
+            float clusterWidthPrice = atrValue * pseudoObClusterAtrMultiplier
+            f_create_pseudo_order_block_from_cluster(confirmedPivots, pseudoOrderBlocks, confirmedPivotType, clusterWidthPrice, pseudoObMinimumBounceBars, pseudoObVolumeMultiplier, pseudoObBoundaryMode, "ヒゲを含む", pseudoObMaximumWidthAtr, pseudoObMinimumWidthAtr, atrValue, volumeSma20, pseudoObSupportColor, pseudoObResistanceColor, pseudoObActiveAlpha, PSEUDO_OB_STATE_ACTIVE, PSEUDO_OB_STATE_MITIGATED, maxPseudoObBoxesCount)
+
         int initialLineRole = confirmedPivotType == PIVOT_TYPE_UP ? SR_ROLE_RESISTANCE : SR_ROLE_SUPPORT
         bool shouldShowHorizontalLine = reversalPivotClass == "HH" or reversalPivotClass == "LL"
         bool isRegimeCandidateLine = reversalPivotClass == "LH" or reversalPivotClass == "HL"
@@ -429,48 +355,11 @@ zz_run() =>
         label tcLabel = label.new(time, regimeShiftSignalPrice, "TC", xloc=xloc.bar_time, style=tcLabelStyle, textcolor=color.white, color=color.new(TC_LABEL_COLOR, SIGNAL_LABEL_BG_ALPHA), size=size.normal)
         f_append_signal_label_with_cap(signalLabels, tcLabel, maxSignalLabels)
 
-    createBullishObFromRegimeShift := regimeShiftConfirmedSignal and regimeShiftIsBullish
-    createBearishObFromRegimeShift := regimeShiftConfirmedSignal and not regimeShiftIsBullish
-
-    if showOB and createBullishObFromRegimeShift and not na(lastConfirmedLowPivotBarIndex) and not na(lastConfirmedLowLegStartBarIndex)
-        int bullishAnchorOffset = f_find_last_opposite_candle_offset(lastConfirmedLowPivotBarIndex, lastConfirmedLowLegStartBarIndex, true)
-        if not na(bullishAnchorOffset)
-            int bullishAnchorBar = bar_index - bullishAnchorOffset
-            bool bullishObIsPremium = hasCoreTimeFvgWithin3Bars and hasStrongTrend
-            bool hasDuplicateBullishOb = f_has_order_block_for_anchor(activeOBs, bullishAnchorBar, OB_DIRECTION_BULLISH)
-
-            if not hasDuplicateBullishOb
-                float bullishTopPrice = obSourceMode == "実体のみ" ? math.max(open[bullishAnchorOffset], close[bullishAnchorOffset]) : high[bullishAnchorOffset]
-                float bullishBottomPrice = low[bullishAnchorOffset]
-                color bullishBaseColor = bullishObIsPremium ? premiumObColor : bullishObColor
-                // Why: 実線枠を付けてゾーン輪郭を明確化する。背景透明度だけではローソク足に埋もれて輪郭が曖昧だった
-                box bullishObBox = box.new(bullishAnchorBar, bullishTopPrice, bar_index, bullishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bullishBaseColor, obAlphaActive), border_width=1, border_color=color.new(bullishBaseColor, 0))
-                OrderBlock bullishOrderBlock = OrderBlock.new(bullishObBox, bullishTopPrice, bullishBottomPrice, OB_DIRECTION_BULLISH, bullishObIsPremium, bullishAnchorBar, OB_STATE_ACTIVE, efficiencyRatioValue, 0, false, false)
-                array.push(activeOBs, bullishOrderBlock)
-                f_trim_order_blocks_with_cap(activeOBs, maxObBoxesCount)
-
-    if showOB and createBearishObFromRegimeShift and not na(lastConfirmedHighPivotBarIndex) and not na(lastConfirmedHighLegStartBarIndex)
-        int bearishAnchorOffset = f_find_last_opposite_candle_offset(lastConfirmedHighPivotBarIndex, lastConfirmedHighLegStartBarIndex, false)
-        if not na(bearishAnchorOffset)
-            int bearishAnchorBar = bar_index - bearishAnchorOffset
-            bool bearishObIsPremium = hasCoreTimeFvgWithin3Bars and hasStrongTrend
-            bool hasDuplicateBearishOb = f_has_order_block_for_anchor(activeOBs, bearishAnchorBar, OB_DIRECTION_BEARISH)
-
-            if not hasDuplicateBearishOb
-                float bearishTopPrice = high[bearishAnchorOffset]
-                float bearishBottomPrice = obSourceMode == "実体のみ" ? math.min(open[bearishAnchorOffset], close[bearishAnchorOffset]) : low[bearishAnchorOffset]
-                color bearishBaseColor = bearishObIsPremium ? premiumObColor : bearishObColor
-                // Why: 実線枠を付けてゾーン輪郭を明確化する。背景透明度だけではローソク足に埋もれて輪郭が曖昧だった
-                box bearishObBox = box.new(bearishAnchorBar, bearishTopPrice, bar_index, bearishBottomPrice, xloc=xloc.bar_index, bgcolor=color.new(bearishBaseColor, obAlphaActive), border_width=1, border_color=color.new(bearishBaseColor, 0))
-                OrderBlock bearishOrderBlock = OrderBlock.new(bearishObBox, bearishTopPrice, bearishBottomPrice, OB_DIRECTION_BEARISH, bearishObIsPremium, bearishAnchorBar, OB_STATE_ACTIVE, efficiencyRatioValue, 0, false, false)
-                array.push(activeOBs, bearishOrderBlock)
-                f_trim_order_blocks_with_cap(activeOBs, maxObBoxesCount)
-
-    if showOB
-        f_update_order_blocks(activeOBs, OB_STATE_ACTIVE, OB_STATE_MITIGATED, OB_DIRECTION_BULLISH, bullishObColor, bearishObColor, premiumObColor, obAlphaMitigated, obExtendMode, OB_EXTEND_MODE_BROKEN_UNTIL, OB_EXTEND_MODE_STOP_AT_FIRST_MITIGATION, OB_EXTEND_MODE_STOP_AT_TOUCH_LIMIT, obMitigationTouchLimit, obMaxAgeBars, obExpiryAction, OB_EXPIRY_ACTION_DELETE, OB_EXPIRY_ACTION_DOTTED, OB_STATE_BROKEN)
+    if showPseudoOrderBlocks
+        f_update_pseudo_order_blocks(pseudoOrderBlocks, PSEUDO_OB_STATE_ACTIVE, PSEUDO_OB_STATE_MITIGATED, PSEUDO_OB_STATE_BROKEN, PSEUDO_OB_STATE_EXPIRED, pseudoObSupportColor, pseudoObResistanceColor, pseudoObMitigatedAlpha, pseudoObMaxAgeBars, pseudoObExpiryAction, PSEUDO_OB_EXPIRY_ACTION_DELETE)
     else
-        while array.size(activeOBs) > 0
-            f_delete_order_block_at(activeOBs, 0)
+        while array.size(pseudoOrderBlocks) > 0
+            f_delete_pseudo_order_block_at(pseudoOrderBlocks, 0)
 
     // 方向性HUDのみ描画する。非表示時はテーブル全体を消去する
     if showHud
