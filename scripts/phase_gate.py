@@ -60,9 +60,10 @@ def print_manual_checklist() -> None:
     print("\n[MANUAL CHECKLIST] TradingView確認項目")
     print("1. 確定レッグと未確定点線が表示される")
     print("2. 水平線が確定ピボット起点で生成される")
-    print("3. 足1終値突破だけでは遷移せず、足2終値の高安更新でのみ遷移する")
-    print("4. Active→Flipped で色反転、Flipped→Broken で灰色ドット化する")
-    print("5. BrokenがExpiry経過で削除され、短期足/長期足で描画破綻がない")
+    print("3. レンジ相場で、ピボット密集帯に疑似OBが重複せず収束する")
+    print("4. 疑似OBは生成バーでMitigatedにならず、再侵入時に点線・高透明度へ遷移する")
+    print("5. Supportは終値下抜け、Resistanceは終値上抜けで右端停止・点線化する")
+    print("6. 寿命到達時の削除／点線化設定が機能し、1分足・5分足で描画遅延がない")
 
 
 def main() -> int:
