@@ -14,7 +14,9 @@ f_calc_efficiency_ratio(sourceSeries, period) =>
 // @param atrMultiplier ATR乗数k
 // @return 反転閾値（価格幅）
 f_calc_dynamic_threshold_price(atrValue, erValue, atrMultiplier) =>
-	float dynamicMultiplier = 0.6 + (erValue * 0.8)
+	// Why: レンジで閾値を狭めると小さな往復でLH/HLが量産され、TCが連続する。
+	//      ERが低いほど反転幅を広げ、ノイズではなく明確な値動きだけを確定させる。
+	float dynamicMultiplier = 1.4 - (erValue * 0.8)
 	float thresholdPrice = (atrMultiplier * atrValue) * dynamicMultiplier
 	thresholdPrice
 
